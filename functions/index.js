@@ -29,7 +29,6 @@ const throwHttpsError = (code, message, details) => {
 exports.apiGateway = functions.https.onCall(async (request, response) => {
     // 1. **Authentication Check (Automatic with onCall)**
     //    context.auth is automatically populated if the user is signed in with Firebase Auth.
-    console.log("context",request.auth);
     if (!request.auth) {
         // If not authenticated, throw an error. The client SDK will receive 'unauthenticated' error code.
         throwHttpsError('unauthenticated', 'Authentication required for tzx88888888888chis action.');
@@ -40,7 +39,10 @@ exports.apiGateway = functions.https.onCall(async (request, response) => {
     console.log(`API call by user: ${userId} (${userEmail})`);
 
     // 2. **Input Validation (Action Dispatch)**
-    // const { action, payload } = request.data; // Expecting { action: 'likePost', payload: { postId: 'abc' } }
+    const data = request.data
+    const { action, payload } = data; // Expecting { action: 'likePost', payload: { postId: 'abc' } }
+    console.log(`action:`,action);
+    console.log(`payload:`,payload);
 
     // if (!action || typeof action !== 'string') {
     //     throwHttpsError('invalid-argument', 'Action is required and must be a string.');
@@ -48,12 +50,15 @@ exports.apiGateway = functions.https.onCall(async (request, response) => {
 
     // Use a switch statement or object mapping to dispatch to specific handlers
     try {
-        return { posts: "posts", message: 'Feed fetched successfully.' }
-        // switch (action) {
+        switch (action) {
         //     case 'createPost':
         //         return await handleCreatePost(payload, userId);
-        //     case 'getFeed':
-        //         return await handleGetFeed(payload, userId);
+            case 'getFeed':
+                return await handleGetFeed(payload, userId);
+            case 'createPost':
+                return await handleCreatePost(payload, userId);
+            case 'createUserProfile':
+                return await handleCreateUserProfile(payload, userId);
         //     case 'likePost':
         //         return await handleLikePost(payload, userId);
         //     case 'addComment':
@@ -65,9 +70,9 @@ exports.apiGateway = functions.https.onCall(async (request, response) => {
         //     case 'updateProfile':
         //         return await handleUpdateProfile(payload, userId);
         //     // Add more actions as your app grows
-        //     default:
-        //         throwHttpsError('not-found', `Action "${action}" not found.`);
-        // }
+            default:
+                throwHttpsError('not-found', `Action "${action}" not found.`);
+        }
 
     } catch (error) {
         // Re-throw HttpsErrors, convert other errors to a generic internal error
@@ -124,51 +129,184 @@ exports.apiGateway = functions.https.onCall(async (request, response) => {
 //     }
 // }
 //
-// async function handleGetFeed(payload, userId) {
-//     // `payload` might contain parameters like `lastPostId`, `limit`, `filterByTag`
-//     const { limit = 20, lastPostId = null, filterByTag } = payload;
-//
-//     // Basic validation
-//     if (typeof limit !== 'number' || limit < 1 || limit > 100) {
-//         throwHttpsError('invalid-argument', 'Limit must be a number between 1 and 100.');
-//     }
-//     if (lastPostId !== null && typeof lastPostId !== 'string') {
-//         throwHttpsError('invalid-argument', 'lastPostId must be a string or null.');
-//     }
-//     if (filterByTag !== undefined && typeof filterByTag !== 'string') {
-//         throwHttpsError('invalid-argument', 'filterByTag must be a string or undefined.');
-//     }
-//
-//     try {
-//         let query = db.collection(POSTS_COLLECTION).orderBy('createdAt', 'desc');
-//
-//         if (filterByTag) {
-//             query = query.where('tags', 'array-contains', filterByTag);
-//         }
-//
-//         if (lastPostId) {
-//             const lastPostSnapshot = await db.collection(POSTS_COLLECTION).doc(lastPostId).get();
-//             if (lastPostSnapshot.exists) {
-//                 query = query.startAfter(lastPostSnapshot);
-//             } else {
-//                 console.warn(`lastPostId ${lastPostId} not found, fetching from start.`);
-//             }
-//         }
-//
-//         const snapshot = await query.limit(limit).get();
-//         const posts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-//
-//         // You might want to fetch additional user data (e.g., profile picture) for each post here
-//         // or keep it simple and let the client fetch that separately if needed.
-//
-//         console.log(`Fetched ${posts.length} posts for user ${userId}`);
-//         return { posts: posts, message: 'Feed fetched successfully.' };
-//     } catch (error) {
-//         console.error('Error in handleGetFeed:', error);
-//         throwHttpsError('internal', 'Failed to fetch feed.', error.message);
-//     }
-// }
-//
+// Existing imports and setup in your BE file (e.g., Firebase Admin SDK)
+// import * as admin from 'firebase-admin';
+// admin.initializeApp();
+// const db = admin.firestore();
+
+// Assuming POSTS_COLLECTION is defined elsewhere, e.g.,
+// const POSTS_COLLECTION = 'posts';
+
+async function handleGetFeed(payload, userId) {
+    // `payload` might contain parameters like `lastPostId`, `limit`, `filterByTag`
+    const { limit = 10, lastPostId = null } = payload; // Changed default limit to 10 to match frontend
+    const POST_LIMIT = limit; // Use the provided limit from payload
+
+    // Basic validation
+    if (typeof limit !== 'number' || limit < 1 || limit > 100) {
+        throwHttpsError('invalid-argument', 'Limit must be a number between 1 and 100.');
+    }
+    if (lastPostId !== null && typeof lastPostId !== 'string') {
+        throwHttpsError('invalid-argument', 'lastPostId must be a string or null.');
+    }
+
+    try {
+        let postsQuery = db.collection(POSTS_COLLECTION)
+            .orderBy('createdAt', 'desc');
+
+        let hasMore = true; // Assume there might be more posts by default
+
+        if (lastPostId) {
+            const lastPostSnapshot = await db.collection(POSTS_COLLECTION).doc(lastPostId).get();
+            if (lastPostSnapshot.exists) {
+                postsQuery = postsQuery.startAfter(lastPostSnapshot);
+            } else {
+                // If lastPostId is invalid or not found, treat it as an initial load
+                console.warn(`lastPostId ${lastPostId} not found, fetching from start.`);
+                // We don't need to re-query here, the original postsQuery is already set up for initial load
+            }
+        }
+
+        const postsSnapshot = await postsQuery.limit(POST_LIMIT + 1).get(); // Fetch one extra document to check for 'hasMore'
+
+        const fetchedPosts = [];
+        postsSnapshot.forEach((doc) => {
+            fetchedPosts.push({
+                id: doc.id,
+                ...doc.data(),
+            });
+        });
+
+        if (fetchedPosts.length <= POST_LIMIT) {
+            hasMore = false; // No more posts if we didn't get more than the limit
+        }
+
+        const postsToReturn = fetchedPosts.slice(0, POST_LIMIT);
+        const lastVisibleDoc = postsSnapshot.docs[postsToReturn.length - 1]; // Get the last document from the returned slice
+
+        console.log(`Fetched ${postsToReturn.length} posts for user ${userId}`);
+
+        return {
+            posts: postsToReturn,
+            lastDocId: lastVisibleDoc ? lastVisibleDoc.id : null, // Pass back the ID of the last document for next pagination
+            hasMore: hasMore, // Indicate if there are more posts to fetch
+            message: 'Feed fetched successfully.',
+        };
+    } catch (error) {
+        console.error('Error in handleGetFeed:', error);
+        // Ensure you have a throwHttpsError function defined for Callable Cloud Functions
+        // or handle errors as appropriate for your BE environment.
+        throwHttpsError('internal', 'Failed to fetch feed.', error.message);
+    }
+}
+
+async function handleCreatePost(payload, userId) {
+    const { description, type, fileUrls = [], location = '', year = [] } = payload;
+
+    // --- 1. Basic Input Validation ---
+    if (typeof description !== 'string' || description.trim().length === 0) {
+        throwHttpsError('invalid-argument', 'Description is required and must be a non-empty string.');
+    }
+    if (!['photo', 'video', 'document', 'item', 'youtube'].includes(type)) {
+        throwHttpsError('invalid-argument', 'Invalid post type provided.');
+    }
+
+    // Validate fileUrls based on type
+    if (type !== 'youtube') {
+        if (!Array.isArray(fileUrls) || fileUrls.some(url => typeof url !== 'string' || url.trim().length === 0)) {
+            throwHttpsError('invalid-argument', 'File URLs must be an array of non-empty strings for non-YouTube posts.');
+        }
+        if (fileUrls.length === 0) {
+            throwHttpsError('invalid-argument', 'At least one file URL is required for this post type.');
+        }
+    } else { // For YouTube type, fileUrls will contain a single YouTube URL
+        if (!Array.isArray(fileUrls) || fileUrls.length !== 1 || typeof fileUrls[0] !== 'string' || !fileUrls[0].includes('youtube.com')) {
+            throwHttpsError('invalid-argument', 'A single valid YouTube URL is required for YouTube posts.');
+        }
+    }
+
+    if (typeof location !== 'string') {
+        throwHttpsError('invalid-argument', 'Location must be a string.');
+    }
+    if (!Array.isArray(year) || year.some(y => typeof y !== 'number' || y < 1000 || y > 3000)) { // Basic year range validation
+        throwHttpsError('invalid-argument', 'Years must be an array of valid numbers.');
+    }
+
+    try {
+        // --- 2. Fetch User Data (for displayName, profilePicUrl etc.) ---
+        const userDoc = await db.collection(USERS_COLLECTION).doc(userId).get();
+        if (!userDoc.exists) {
+            throwHttpsError('not-found', 'User profile not found. Cannot create post.');
+        }
+        const userData = userDoc.data();
+        const userDisplayName = userData.displayName || userDoc.id; // Fallback to UID
+        const userProfilePicUrl = userData.profilePictureUrl || null; // Get user's profile picture
+
+        // --- 3. Create New Post Document in Firestore ---
+        const newPostRef = db.collection(POSTS_COLLECTION).doc(); // Auto-generate ID
+
+        const postData = {
+            userId: userId,
+            userDisplayName: userDisplayName,
+            userProfilePicUrl: userProfilePicUrl, // Store user's profile pic with the post for easier display
+            description: description.trim(),
+            type: type,
+            files: fileUrls, // Array of file URLs (or YouTube URL)
+            location: location.trim(),
+            year: year.sort((a, b) => a - b), // Ensure years are sorted
+            likesCount: 0,
+            commentsCount: 0,
+            bookmarksCount: 0,
+            createdAt: new Date(), // Server timestamp is best practice
+            updatedAt: new Date(),
+        };
+
+        await newPostRef.set(postData);
+
+        console.log(`Post ${newPostRef.id} (${type}) created by ${userId}`);
+        return { postId: newPostRef.id, message: 'Post created successfully!' };
+
+    } catch (error) {
+        console.error('Error in handleCreatePost:', error);
+        if (error instanceof functions.https.HttpsError) {
+            throw error; // Re-throw already handled HttpsErrors
+        }
+        throwHttpsError('internal', 'Failed to create post.', error.message);
+    }
+}
+
+async function handleCreateUserProfile(payload, userId) {
+    const { displayName, photoURL } = payload || {};
+    const userEmail = null; // You'd need to get this from auth token if needed
+
+    try {
+        // Check if profile already exists
+        const existingProfile = await db.collection(USERS_COLLECTION).doc(userId).get();
+        if (existingProfile.exists) {
+            return { message: 'Profile already exists', profile: existingProfile.data() };
+        }
+        const now = new Date();
+
+        const profileData = {
+            displayName: displayName || `User_${userId.substring(0, 8)}`,
+            profilePictureUrl: photoURL || null,
+            createdAt: now,
+            followersCount: 0,
+            followingCount: 0,
+            bio: '',
+            postsCount: 0,
+            updatedAt: now,
+        };
+
+        await db.collection(USERS_COLLECTION).doc(userId).set(profileData);
+        console.log(`Profile created successfully for ${userId}`);
+
+        return { message: 'Profile created successfully', profile: profileData };
+    } catch (error) {
+        console.error(`Error creating profile for user ${userId}:`, error);
+        throwHttpsError('internal', 'Failed to create profile', error.message);
+    }
+}
 // async function handleLikePost(payload, userId) {
 //     const { postId } = payload;
 //
