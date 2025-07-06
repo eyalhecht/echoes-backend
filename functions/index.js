@@ -59,6 +59,8 @@ exports.apiGateway = functions.https.onCall(async (request, response) => {
                 return await handleCreatePost(payload, userId);
             case 'createUserProfile':
                 return await handleCreateUserProfile(payload, userId);
+            case 'likePost':
+                return await handleLikePost(payload, userId);
         //     case 'likePost':
         //         return await handleLikePost(payload, userId);
         //     case 'addComment':
@@ -169,13 +171,23 @@ async function handleGetFeed(payload, userId) {
 
         const postsSnapshot = await postsQuery.limit(POST_LIMIT + 1).get(); // Fetch one extra document to check for 'hasMore'
 
-        const fetchedPosts = [];
-        postsSnapshot.forEach((doc) => {
-            fetchedPosts.push({
-                id: doc.id,
-                ...doc.data(),
-            });
-        });
+        const postDocs = postsSnapshot.docs.slice(0, POST_LIMIT); // Limit to the requested number of posts
+
+        const fetchedPosts = await Promise.all(postDocs.map(async (doc) => {
+            const postData = { id: doc.id, ...doc.data() };
+            try {
+                const likeDocRef = db.collection(POSTS_COLLECTION)
+                    .doc(doc.id)
+                    .collection('likes')
+                    .doc(userId);
+                const likeDoc = await likeDocRef.get();
+                postData.likedByCurrentUser = likeDoc.exists;
+            } catch (err) {
+                console.error(`Error checking like for post ${doc.id}`, err);
+                postData.likedByCurrentUser = false; // fallback
+            }
+            return postData;
+        }));
 
         if (fetchedPosts.length <= POST_LIMIT) {
             hasMore = false; // No more posts if we didn't get more than the limit
@@ -307,6 +319,63 @@ async function handleCreateUserProfile(payload, userId) {
         throwHttpsError('internal', 'Failed to create profile', error.message);
     }
 }
+
+async function handleLikePost(payload, userId) {
+    const { postId } = payload;
+
+    if (!postId || typeof postId !== 'string') {
+        throwHttpsError('invalid-argument', 'A valid postId is required.');
+    }
+
+    const postRef = db.collection(POSTS_COLLECTION).doc(postId);
+    const likeRef = postRef.collection(LIKES_SUBCOLLECTION).doc(userId); // Document per user like
+
+    try {
+        const result = await db.runTransaction(async (transaction) => {
+            const postDoc = await transaction.get(postRef);
+            if (!postDoc.exists) {
+                throwHttpsError('not-found', 'Post not found.');
+            }
+
+            const likeDoc = await transaction.get(likeRef);
+            let newLikeCount = postDoc.data().likesCount || 0; // Note: using likesCount (plural) to match your schema
+            let status;
+            // race condition
+            if (likeDoc.exists) {
+                // User already liked, so unlike
+                transaction.delete(likeRef);
+                newLikeCount = Math.max(0, newLikeCount - 1); // Ensure count doesn't go below zero
+                status = 'unliked';
+            } else {
+                // User has not liked, so like
+                transaction.set(likeRef, {
+                    userId: userId,
+                    createdAt: new Date(), // Using new Date() to match your timestamp format
+                });
+                newLikeCount += 1;
+                status = 'liked';
+            }
+            transaction.update(postRef, { likesCount: newLikeCount });
+            return { status, newLikeCount };
+        });
+
+        console.log(`User ${userId} ${result.status} post ${postId}. New count: ${result.newLikeCount}`);
+        return {
+            status: result.status,
+            newLikeCount: result.newLikeCount,
+            postId: postId,
+            message: 'Like status updated.'
+        };
+    } catch (error) {
+        console.error(`Error in handleLikePost for post ${postId} by user ${userId}:`, error);
+        // Ensure any custom errors from transaction also converted to HttpsError
+        if (error instanceof functions.https.HttpsError) {
+            throw error;
+        }
+        throwHttpsError('internal', 'Failed to update like status.', error.message);
+    }
+}
+
 // async function handleLikePost(payload, userId) {
 //     const { postId } = payload;
 //
