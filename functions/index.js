@@ -61,6 +61,8 @@ exports.apiGateway = functions.https.onCall(async (request, response) => {
                 return await handleCreateUserProfile(payload, userId);
             case 'likePost':
                 return await handleLikePost(payload, userId);
+            case 'toggleBookmark':
+                return await handleToggleBookmark(payload, userId);
         //     case 'likePost':
         //         return await handleLikePost(payload, userId);
         //     case 'addComment':
@@ -182,9 +184,17 @@ async function handleGetFeed(payload, userId) {
                     .doc(userId);
                 const likeDoc = await likeDocRef.get();
                 postData.likedByCurrentUser = likeDoc.exists;
+                // Check if post is bookmarked by current user
+                const bookmarkDocRef = db.collection(USERS_COLLECTION)
+                    .doc(userId)
+                    .collection('bookmarks')
+                    .doc(doc.id);
+                const bookmarkDoc = await bookmarkDocRef.get();
+                postData.bookmarkedByCurrentUser = bookmarkDoc.exists;
             } catch (err) {
-                console.error(`Error checking like for post ${doc.id}`, err);
+                console.error(`Error checking like/bookmark for post ${doc.id}`, err);
                 postData.likedByCurrentUser = false; // fallback
+                postData.bookmarkedByCurrentUser = false; // fallback
             }
             return postData;
         }));
@@ -373,6 +383,76 @@ async function handleLikePost(payload, userId) {
             throw error;
         }
         throwHttpsError('internal', 'Failed to update like status.', error.message);
+    }
+}
+
+async function handleToggleBookmark(payload, userId) {
+    const { postId } = payload;
+
+    if (!postId || typeof postId !== 'string') {
+        throwHttpsError('invalid-argument', 'A valid postId is required.');
+    }
+
+    try {
+        const result = await db.runTransaction(async (transaction) => {
+            // References
+            const postRef = db.collection(POSTS_COLLECTION).doc(postId);
+            const userRef = db.collection(USERS_COLLECTION).doc(userId);
+            const bookmarkRef = userRef.collection('bookmarks').doc(postId);
+
+            // Check if post exists
+            const postDoc = await transaction.get(postRef);
+            if (!postDoc.exists) {
+                throwHttpsError('not-found', 'Post not found.');
+            }
+
+            // Check if user has already bookmarked this post
+            const bookmarkDoc = await transaction.get(bookmarkRef);
+
+            let status;
+            let newBookmarkCount = postDoc.data().bookmarksCount || 0;
+
+            if (bookmarkDoc?.exists) {
+                // User has bookmarked, so remove bookmark
+                transaction.delete(bookmarkRef);
+                newBookmarkCount = Math.max(0, newBookmarkCount - 1);
+                status = 'unbookmarked';
+            } else {
+                // User hasn't bookmarked, so add bookmark
+                transaction.set(bookmarkRef, {
+                    postId: postId,
+                    bookmarkedAt: new Date(),
+                });
+                newBookmarkCount += 1;
+                status = 'bookmarked';
+            }
+
+            // Update bookmark count on the post
+            transaction.update(postRef, {
+                bookmarksCount: newBookmarkCount,
+                updatedAt: new Date()
+            });
+
+            return { status, newBookmarkCount };
+        });
+
+        console.log(`User ${userId} ${result.status} post ${postId}. New bookmark count: ${result.newBookmarkCount}`);
+
+        return {
+            status: result.status,
+            newBookmarkCount: result.newBookmarkCount,
+            postId: postId,
+            message: `Post ${result.status} successfully.`
+        };
+
+    } catch (error) {
+        console.error(`Error toggling bookmark for post ${postId} by user ${userId}:`, error);
+
+        if (error instanceof functions.https.HttpsError) {
+            throw error;
+        }
+
+        throwHttpsError('internal', 'Failed to update bookmark status.', error.message);
     }
 }
 
