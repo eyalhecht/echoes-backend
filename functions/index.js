@@ -1,6 +1,7 @@
 // functions/index.js
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
+const { GeoPoint } = require('firebase-admin/firestore');
 
 // --- Initialize Firebase Admin SDK ---
 // This initializes the SDK with your Firebase project's credentials automatically
@@ -223,7 +224,7 @@ async function handleGetFeed(payload, userId) {
 }
 
 async function handleCreatePost(payload, userId) {
-    const { description, type, fileUrls = [], location = '', year = [] } = payload;
+    const { description, type, fileUrls = [], location = null, year = [] } = payload;
 
     // --- 1. Basic Input Validation ---
     if (typeof description !== 'string' || description.trim().length === 0) {
@@ -247,9 +248,42 @@ async function handleCreatePost(payload, userId) {
         }
     }
 
-    if (typeof location !== 'string') {
-        throwHttpsError('invalid-argument', 'Location must be a string.');
-    }
+    // // Validate location as GeoPoint
+    // let validatedLocation = null;
+    // if (location !== null && location !== undefined) {
+    //     // Check if it's already a GeoPoint instance
+    //     if (location instanceof GeoPoint) {
+    //         validatedLocation = location;
+    //     }
+    //     // Check if it's an object with lat/lng properties
+    //     else if (
+    //         typeof location === 'object' &&
+    //         typeof location.lat === 'number' &&
+    //         typeof location.lng === 'number'
+    //     ) {
+    //         // Validate latitude and longitude ranges
+    //         if (location.lat < -90 || location.lat > 90) {
+    //             throwHttpsError('invalid-argument', 'Latitude must be between -90 and 90 degrees.');
+    //         }
+    //         if (location.lng < -180 || location.lng > 180) {
+    //             throwHttpsError('invalid-argument', 'Longitude must be between -180 and 180 degrees.');
+    //         }
+    //         // Create GeoPoint from coordinates
+    //         validatedLocation = new GeoPoint(location.lat, location.lng);
+    //     }
+    //     // Check if it's a Firestore serialized GeoPoint (has _latitude and _longitude)
+    //     else if (
+    //         typeof location === 'object' &&
+    //         typeof location._latitude === 'number' &&
+    //         typeof location._longitude === 'number'
+    //     ) {
+    //         validatedLocation = new GeoPoint(location._latitude, location._longitude);
+    //     }
+    //     else {
+    //         throwHttpsError('invalid-argument', 'Location must be a valid GeoPoint or an object with lat/lng properties.');
+    //     }
+    // }
+
     if (!Array.isArray(year) || year.some(y => typeof y !== 'number' || y < 1000 || y > 3000)) { // Basic year range validation
         throwHttpsError('invalid-argument', 'Years must be an array of valid numbers.');
     }
@@ -274,7 +308,7 @@ async function handleCreatePost(payload, userId) {
             description: description.trim(),
             type: type,
             files: fileUrls, // Array of file URLs (or YouTube URL)
-            location: location.trim(),
+            location: location, // Store as GeoPoint or null
             year: year.sort((a, b) => a - b), // Ensure years are sorted
             likesCount: 0,
             commentsCount: 0,
