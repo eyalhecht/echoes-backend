@@ -308,7 +308,7 @@ async function handleCreatePost(payload, userId) {
             description: description.trim(),
             type: type,
             files: fileUrls, // Array of file URLs (or YouTube URL)
-            location: location, // Store as GeoPoint or null
+            location: new GeoPoint(location._lat, location._long), // Store as GeoPoint or null
             year: year.sort((a, b) => a - b), // Ensure years are sorted
             likesCount: 0,
             commentsCount: 0,
