@@ -2,6 +2,9 @@
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 const { GeoPoint } = require('firebase-admin/firestore');
+const vision = require('@google-cloud/vision');
+const client = new vision.ImageAnnotatorClient(); // Initializes with default credentials from Cloud Functions environment
+
 
 // --- Initialize Firebase Admin SDK ---
 // This initializes the SDK with your Firebase project's credentials automatically
@@ -298,6 +301,53 @@ async function handleCreatePost(payload, userId) {
         const userDisplayName = userData.displayName || userDoc.id; // Fallback to UID
         const userProfilePicUrl = userData.profilePictureUrl || null; // Get user's profile picture
 
+        // let imageLabels = [];
+        // let safeSearchLikelihood = null;
+        // if (type === 'photo') { // Assuming video thumbnails or frames can be analyzed
+        //     const imageUrlToAnalyze = fileUrls[0];
+        //     if (imageUrlToAnalyze) {
+        //         try {
+        //             const [result] = await client.annotateImage({
+        //                 image: { source: { imageUri: imageUrlToAnalyze } },
+        //                 features: [
+        //                     { type: 'LABEL_DETECTION' }, // Detect broad labels (e.g., "car", "nature")
+        //                     { type: 'SAFE_SEARCH_DETECTION' }, // Detect explicit content
+        //                     // { type: 'WEB_DETECTION' }, // Find web entities related to the image
+        //                     // { type: 'TEXT_DETECTION' }, // Detect text in the image (OCR)
+        //                     { type: 'FACE_DETECTION' }, // Detect faces
+        //                     { type: 'LANDMARK_DETECTION' }, // Detect famous landmarks
+        //                 ],
+        //             });
+        //             console.log("reesultsfaceAnnotations:", JSON.stringify(result, null, 2))
+        //
+        //             // Extract labels
+        //             if (result.labelAnnotations) {
+        //                 imageLabels = result.labelAnnotations
+        //                     .filter(label => label.score > 0.4) // Filter for higher confidence scores
+        //                     .map(label => label.description);
+        //             }
+        //
+        //             // Extract Safe Search results
+        //             if (result.safeSearchAnnotation) {
+        //                 safeSearchLikelihood = {
+        //                     adult: result.safeSearchAnnotation.adult,
+        //                     spoof: result.safeSearchAnnotation.spoof,
+        //                     medical: result.safeSearchAnnotation.medical,
+        //                     violence: result.safeSearchAnnotation.violence,
+        //                     racy: result.safeSearchAnnotation.racy,
+        //                 };
+        //             }
+        //
+        //         } catch (visionError) {
+        //             console.warn(`Cloud Vision API error for URL ${imageUrlToAnalyze}:`, visionError);
+        //             // Decide how to handle Vision errors:
+        //             // - You could throw an HttpsError to stop post creation if Vision is critical.
+        //             // - Or, you can just log it and proceed without image info, as shown here.
+        //         }
+        //     }
+        // }
+
+
         // --- 3. Create New Post Document in Firestore ---
         const newPostRef = db.collection(POSTS_COLLECTION).doc(); // Auto-generate ID
 
@@ -315,6 +365,8 @@ async function handleCreatePost(payload, userId) {
             bookmarksCount: 0,
             createdAt: new Date(), // Server timestamp is best practice
             updatedAt: new Date(),
+            // imageRecognitionLabels: imageLabels,
+            // safeSearch: safeSearchLikelihood,
         };
 
         await newPostRef.set(postData);
