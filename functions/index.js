@@ -25,7 +25,7 @@ const throwHttpsError = (code, message, details) => {
     throw new functions.https.HttpsError(code, message, details);
 };
 
-// --- Your Main API Gateway Callable Function ---
+// --- Your Main API  Gateway Callable Function ---
 // This function handles all client-side API calls and dispatches to appropriate logic.
 exports.apiGateway = functions.https.onCall(async (request, response) => {
     // 1. **Authentication Check (Automatic with onCall)**
