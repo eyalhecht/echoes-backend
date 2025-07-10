@@ -1,10 +1,10 @@
 // functions/index.js
-const functions = require('firebase-functions');
-const admin = require('firebase-admin');
-const { GeoPoint } = require('firebase-admin/firestore');
-const vision = require('@google-cloud/vision');
-const client = new vision.ImageAnnotatorClient(); // Initializes with default credentials from Cloud Functions environment
-
+import 'dotenv/config';
+import functions from 'firebase-functions';
+import admin from 'firebase-admin';
+import { GeoPoint } from 'firebase-admin/firestore';
+import vision from '@google-cloud/vision';
+import OpenAI from 'openai';
 
 // --- Initialize Firebase Admin SDK ---
 // This initializes the SDK with your Firebase project's credentials automatically
@@ -30,7 +30,7 @@ const throwHttpsError = (code, message, details) => {
 
 // --- Your Main API  Gateway Callable Function ---
 // This function handles all client-side API calls and dispatches to appropriate logic.
-exports.apiGateway = functions.https.onCall(async (request, response) => {
+export const apiGateway = functions.https.onCall(async (request, response) => {
     // 1. **Authentication Check (Automatic with onCall)**
     //    context.auth is automatically populated if the user is signed in with Firebase Auth.
     if (!request.auth) {
@@ -351,6 +351,13 @@ async function handleCreatePost(payload, userId) {
         // --- 3. Create New Post Document in Firestore ---
         const newPostRef = db.collection(POSTS_COLLECTION).doc(); // Auto-generate ID
 
+        // let AiMetadata = null;
+        // AiMetadata = await analyzePhoto(fileUrls[0], {
+        //     userContext: '',
+        //     analysisDepth: 'comprehensive'
+        // });
+        // console.log('Photo metadata:', AiMetadata);
+
         const postData = {
             userId: userId,
             userDisplayName: userDisplayName,
@@ -365,7 +372,7 @@ async function handleCreatePost(payload, userId) {
             bookmarksCount: 0,
             createdAt: new Date(), // Server timestamp is best practice
             updatedAt: new Date(),
-            // imageRecognitionLabels: imageLabels,
+            // AiMetadata
             // safeSearch: safeSearchLikelihood,
         };
 
@@ -382,6 +389,298 @@ async function handleCreatePost(payload, userId) {
         throwHttpsError('internal', 'Failed to create post.', error.message);
     }
 }
+
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+});
+
+// System prompt for consistent, professional analysis
+const SYSTEM_PROMPT = `You are an expert archivist and cultural heritage specialist with deep knowledge of:
+- Dublin Core, VRA Core, and CCO (Cataloging Cultural Objects) standards
+- Getty Vocabulary Program (AAT, TGN, ULAN, CONA)
+- Library of Congress Subject Headings (LCSH)
+- International archival and museum cataloging practices
+
+Your task is to analyze photographs and provide scholarly, precise metadata following established archival standards. Always:
+1. Use controlled vocabularies when available
+2. Provide context and cultural significance
+3. Follow professional cataloging protocols
+4. Be academically rigorous yet accessible
+5. Consider multiple perspectives and interpretations`;
+
+// User prompt template
+const USER_PROMPT = `Please analyze this photograph and provide comprehensive archival metadata following international cataloging standards.
+
+Return a JSON object with the following structure:
+
+{
+  "title": "Descriptive title following CCO guidelines",
+  "creator": {
+    "name": "Photographer/creator name if identifiable",
+    "role": "photographer|artist|unknown",
+    "certainty": "definite|probable|possible|unknown"
+  },
+  "date": {
+    "display": "Human-readable date (e.g., 'circa 1920s', 'May 15, 1965')",
+    "earliest": "YYYY-MM-DD",
+    "latest": "YYYY-MM-DD",
+    "certainty": "definite|probable|approximate"
+  },
+  "medium": {
+    "type": "Specific photographic technique",
+    "format": "Physical format if determinable",
+    "process": "Technical process used"
+  },
+  "subject": {
+    "primary": ["Main subjects using AAT/LCSH terms"],
+    "secondary": ["Additional subjects"],
+    "depicted": ["Specific people, places, or things shown"],
+    "conceptual": ["Abstract concepts or themes"]
+  },
+  "location": {
+    "depicted": {
+      "display": "Human-readable location",
+      "city": "City name",
+      "region": "State/Province",
+      "country": "Country",
+      "coordinates": {"lat": null, "lng": null},
+      "tgn_id": "Getty TGN ID if applicable"
+    },
+    "created": "Where photo was taken if different from depicted"
+  },
+  "event": {
+    "name": "Specific event if identifiable",
+    "type": "Event category",
+    "date": "Event date if different from photo date",
+    "significance": "Historical importance"
+  },
+  "style": {
+    "period": "Historical/artistic period",
+    "movement": "Artistic movement if applicable",
+    "technique": "Photographic technique or approach"
+  },
+  "cultural_significance": {
+    "historical": "Historical context and importance",
+    "cultural": "Cultural meaning and impact",
+    "artistic": "Artistic significance",
+    "social": "Social context and implications"
+  },
+  "physical_description": {
+    "composition": "Description of visual composition",
+    "condition": "Apparent condition if assessable",
+    "inscriptions": "Any visible text or markings",
+  },
+  "related_works": "Similar or related photographs/artworks",
+  "tags": {
+    "subject": ["Subject-based tags"],
+    "temporal": ["Time-period tags"],
+    "geographic": ["Location-based tags"],
+    "stylistic": ["Style/technique tags"],
+    "cultural": ["Cultural/social tags"]
+  },
+  "cataloging_notes": "Additional scholarly notes for archivists"
+}
+
+Ensure all classifications follow professional standards and use appropriate controlled vocabularies.`;
+
+
+export async function analyzePhoto(photoUrl, options = {}) {
+    const {
+        userContext = '',
+        analysisDepth = 'standard',
+        maxRetries = 3
+    } = options;
+
+    let userPrompt = USER_PROMPT;
+    if (userContext) {
+        userPrompt += `\n\nAdditional context: ${userContext}`;
+    }
+
+    if (analysisDepth === 'basic') {
+        userPrompt += '\n\nProvide essential metadata only (title, date, location, primary subjects, and key tags).';
+    } else if (analysisDepth === 'comprehensive') {
+        userPrompt += '\n\nProvide exhaustive analysis including all possible interpretations, detailed cultural context, and comprehensive controlled vocabulary terms.';
+    }
+
+    let attempt = 0;
+    while (attempt < maxRetries) {
+        try {
+            const response = await openai.chat.completions.create({
+                model: "gpt-4o",
+                messages: [
+                    {
+                        role: "system",
+                        content: SYSTEM_PROMPT
+                    },
+                    {
+                        role: "user",
+                        content: [
+                            {
+                                type: "text",
+                                text: userPrompt
+                            },
+                            {
+                                type: "image_url",
+                                image_url: {
+                                    url: photoUrl,
+                                    detail: analysisDepth === 'comprehensive' ? 'high' : 'auto'
+                                }
+                            }
+                        ]
+                    }
+                ],
+                temperature: 0.3, // Lower temperature for more consistent cataloging
+                max_tokens: analysisDepth === 'comprehensive' ? 4000 : 2000,
+                response_format: { type: "json_object" }
+            });
+
+            const result = JSON.parse(response.choices[0].message.content);
+
+            // Validate and clean the result
+            return validateAndCleanResult(result);
+
+        } catch (error) {
+            attempt++;
+            console.error(`Attempt ${attempt} failed:`, error);
+
+            if (attempt >= maxRetries) {
+                throw new Error(`Failed to analyze photo after ${maxRetries} attempts: ${error.message}`);
+            }
+
+            // Wait before retrying (exponential backoff)
+            await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+        }
+    }
+}
+
+/**
+ * Validates and cleans the API response
+ */
+function validateAndCleanResult(result) {
+    // Ensure required fields exist
+    const cleaned = {
+        title: result.title || 'Untitled Photograph',
+        creator: {
+            name: result.creator?.name || 'Unknown',
+            role: result.creator?.role || 'unknown',
+            certainty: result.creator?.certainty || 'unknown'
+        },
+        date: {
+            display: result.date?.display || 'Date unknown',
+            earliest: result.date?.earliest || null,
+            latest: result.date?.latest || null,
+            certainty: result.date?.certainty || 'unknown'
+        },
+        medium: result.medium || { type: 'Photograph', format: 'Unknown', process: 'Unknown' },
+        subject: {
+            primary: Array.isArray(result.subject?.primary) ? result.subject.primary : [],
+            secondary: Array.isArray(result.subject?.secondary) ? result.subject.secondary : [],
+            depicted: Array.isArray(result.subject?.depicted) ? result.subject.depicted : [],
+            conceptual: Array.isArray(result.subject?.conceptual) ? result.subject.conceptual : []
+        },
+        location: result.location || {},
+        event: result.event || null,
+        style: result.style || {},
+        cultural_significance: result.cultural_significance || {},
+        physical_description: result.physical_description || {},
+        related_works: result.related_works || null,
+        tags: {
+            subject: Array.isArray(result.tags?.subject) ? result.tags.subject : [],
+            temporal: Array.isArray(result.tags?.temporal) ? result.tags.temporal : [],
+            geographic: Array.isArray(result.tags?.geographic) ? result.tags.geographic : [],
+            stylistic: Array.isArray(result.tags?.stylistic) ? result.tags.stylistic : [],
+            cultural: Array.isArray(result.tags?.cultural) ? result.tags.cultural : []
+        },
+        cataloging_notes: result.cataloging_notes || ''
+    };
+
+    return cleaned;
+}
+
+/**
+ * Simplified analysis for quick tagging
+ */
+export async function quickAnalyzePhoto(photoUrl) {
+    const quickPrompt = `Analyze this photo and provide:
+  1. A brief descriptive title
+  2. Estimated date/period
+  3. Location if identifiable
+  4. 5-10 relevant tags
+  
+  Return as JSON: { title, date, location, tags: [] }`;
+
+    try {
+        const response = await openai.chat.completions.create({
+            model: "gpt-4-vision-preview",
+            messages: [
+                {
+                    role: "user",
+                    content: [
+                        { type: "text", text: quickPrompt },
+                        { type: "image_url", image_url: { url: photoUrl } }
+                    ]
+                }
+            ],
+            temperature: 0.5,
+            max_tokens: 500,
+            response_format: { type: "json_object" }
+        });
+
+        return JSON.parse(response.choices[0].message.content);
+    } catch (error) {
+        console.error('Quick analysis failed:', error);
+        throw error;
+    }
+}
+
+/**
+ * Batch analyze multiple photos
+ */
+export async function batchAnalyzePhotos(photoUrls, options = {}) {
+    const results = [];
+    const { concurrency = 3 } = options;
+
+    // Process in chunks to avoid rate limits
+    for (let i = 0; i < photoUrls.length; i += concurrency) {
+        const chunk = photoUrls.slice(i, i + concurrency);
+        const chunkResults = await Promise.allSettled(
+            chunk.map(url => analyzePhoto(url, options))
+        );
+
+        results.push(...chunkResults.map((result, index) => ({
+            url: chunk[index],
+            success: result.status === 'fulfilled',
+            data: result.status === 'fulfilled' ? result.value : null,
+            error: result.status === 'rejected' ? result.reason.message : null
+        })));
+
+        // Rate limit pause between chunks
+        if (i + concurrency < photoUrls.length) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+    }
+
+    return results;
+}
+
+// Usage example:
+/*
+try {
+  const metadata = await analyzePhoto('https://example.com/photo.jpg', {
+    userContext: 'This photo was found in my grandmother\'s album from Europe',
+    analysisDepth: 'comprehensive'
+  });
+
+  console.log('Photo metadata:', metadata);
+
+  // Quick analysis for tagging
+  const quickTags = await quickAnalyzePhoto('https://example.com/photo.jpg');
+  console.log('Quick tags:', quickTags);
+
+} catch (error) {
+  console.error('Analysis failed:', error);
+}
+*/
 
 async function handleCreateUserProfile(payload, userId) {
     const { displayName, photoURL } = payload || {};
