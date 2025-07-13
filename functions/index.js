@@ -370,7 +370,9 @@ async function handleCreatePost(payload, userId) {
             description: description.trim(),
             type: type,
             files: fileUrls, // Array of file URLs (or YouTube URL)
-            location: new GeoPoint(location._lat, location._long), // Store as GeoPoint or null
+            location: (location && typeof location._lat === 'number' && typeof location._long === 'number')
+                ? new admin.firestore.GeoPoint(location._lat, location._long)
+                : null,
             year: year.sort((a, b) => a - b), // Ensure years are sorted
             likesCount: 0,
             commentsCount: 0,
