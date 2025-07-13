@@ -35,7 +35,7 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
     //    context.auth is automatically populated if the user is signed in with Firebase Auth.
     if (!request.auth) {
         // If not authenticated, throw an error. The client SDK will receive 'unauthenticated' error code.
-        throwHttpsError('unauthenticated', 'Authentication required for tzx88888888888chis action.');
+        throwHttpsError('unauthenticated', 'Authentication required for this action.');
     }
 
     const userId = request.auth.uid; // The unique ID of the authenticated user
@@ -78,8 +78,8 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
         //         return await handleFollowUser(payload, userId);
             case 'getProfile':
                 return await handleGetProfile(payload, userId);
-            case 'getUserPosts':
-                return await handleGetUserPosts(payload, userId);
+            // case 'getUserPosts':
+            //     return await handleGetUserPosts(payload, userId);
         //     case 'updateProfile':
         //         return await handleUpdateProfile(payload, userId);
         //     // Add more actions as your app grows
