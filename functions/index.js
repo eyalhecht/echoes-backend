@@ -57,6 +57,9 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
         switch (action) {
         //     case 'createPost':
         //         return await handleCreatePost(payload, userId);
+            case 'followUser':
+            case 'unfollowUser':
+                return handleFollowUnfollow(payload, userId, action);
             case 'getFeed':
                 return await handleGetFeed(payload, userId);
             case 'createPost':
@@ -73,8 +76,10 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
         //         return await handleAddComment(payload, userId);
         //     case 'followUser':
         //         return await handleFollowUser(payload, userId);
-        //     case 'getProfile':
-        //         return await handleGetProfile(payload, userId);
+            case 'getProfile':
+                return await handleGetProfile(payload, userId);
+            case 'getUserPosts':
+                return await handleGetUserPosts(payload, userId);
         //     case 'updateProfile':
         //         return await handleUpdateProfile(payload, userId);
         //     // Add more actions as your app grows
@@ -1005,33 +1010,277 @@ async function handleToggleBookmark(payload, userId) {
 //     }
 // }
 //
-// async function handleGetProfile(payload, userId) {
-//     const { profileUserId } = payload;
-//     const targetId = profileUserId || userId; // If no ID provided, get current user's profile
+async function handleGetProfile(payload, userId) {
+    const { profileUserId } = payload;
+    // Determine the target user ID: from payload for other profiles, or current user's ID
+    const targetId = profileUserId || userId;
+
+    if (!targetId || typeof targetId !== 'string') {
+        throwHttpsError('invalid-argument', 'A valid user ID is required to fetch a profile.');
+    }
+
+    try {
+        const userDocRef = db.collection(USERS_COLLECTION).doc(targetId);
+        const userDoc = await userDocRef.get();
+
+        if (!userDoc.exists) {
+            throwHttpsError('not-found', 'User profile not found.');
+        }
+
+        const profileData = userDoc.data();
+
+        // --- Fetch Followers List (IDs) ---
+        const followersSnapshot = await userDocRef.collection('followers').get();
+        // Map over the documents to get an array of their IDs
+        const followerIds = followersSnapshot.docs.map(doc => doc.id);
+        profileData.followers = followerIds; // Add the array of IDs to profileData
+        profileData.followersCount = followerIds.length; // You can still provide the count
+
+        // --- Fetch Following List (IDs) ---
+        const followingSnapshot = await userDocRef.collection('following').get();
+        // Map over the documents to get an array of their IDs
+        const followingIds = followingSnapshot.docs.map(doc => doc.id);
+        profileData.following = followingIds; // Add the array of IDs to profileData
+        profileData.followingCount = followingIds.length; // You can still provide the count
+
+        // Optional: Also check if the *current authenticated user* is following this profile
+        let isFollowedByCurrentUser = false;
+        if (userId && userId !== targetId) { // Only relevant if viewing someone else's profile
+            isFollowedByCurrentUser = followerIds.includes(userId);
+            // This is more efficient than a separate Firestore read if followerIds is already fetched
+            // const followerDoc = await userDocRef.collection('followers').doc(userId).get();
+            // isFollowedByCurrentUser = followerDoc.exists;
+        }
+        profileData.isFollowedByCurrentUser = isFollowedByCurrentUser;
+
+
+        // Remove sensitive or unnecessary data for public profiles
+        if (profileUserId) { // If profileUserId is provided, it means it's a public profile request
+            delete profileData.email;
+            delete profileData.createdAt;
+            delete profileData.updatedAt;
+            // You might also want to remove 'followers' and 'following' arrays themselves
+            // if you don't want them exposed directly on public profiles,
+            // but just the counts. This depends on your app's privacy requirements.
+            // If you only want counts, comment out the lines that set profileData.followers and profileData.following.
+        }
+
+        console.log(`Fetched profile for user ${targetId} with data ${JSON.stringify(profileData)}`);
+        return { profile: profileData, message: 'Profile fetched successfully.' };
+
+    } catch (error) {
+        console.error(`Error in handleGetProfile for ${targetId}:`, error);
+        throwHttpsError('internal', 'Failed to fetch profile.', error.message);
+    }
+}
+
+async function handleFollowUnfollow(payload, userId, actionType) {
+    const { targetUserId } = payload;
+
+    // 1. Basic Validation
+    if (!userId) {
+        throwHttpsError('unauthenticated', 'You must be authenticated to perform this action.');
+    }
+    if (!targetUserId || typeof targetUserId !== 'string') {
+        throwHttpsError('invalid-argument', 'A valid target user ID is required.');
+    }
+    if (userId === targetUserId) {
+        throwHttpsError('invalid-argument', 'You cannot follow or unfollow yourself.');
+    }
+    if (actionType !== 'followUser' && actionType !== 'unfollowUser') {
+        throwHttpsError('invalid-argument', 'Invalid action type. Must be "followUser" or "unfollowUser".');
+    }
+
+    const currentUserRef = db.collection(USERS_COLLECTION).doc(userId);
+    const targetUserRef = db.collection(USERS_COLLECTION).doc(targetUserId);
+
+    // Check if both users exist (optional but good for data integrity)
+    const [currentUserDoc, targetUserDoc] = await Promise.all([
+        currentUserRef.get(),
+        targetUserRef.get()
+    ]);
+
+    if (!currentUserDoc.exists) {
+        throwHttpsError('not-found', 'Your user profile was not found.');
+    }
+    if (!targetUserDoc.exists) {
+        throwHttpsError('not-found', 'The target user profile was not found.');
+    }
+
+    // 2. Perform the transaction
+    try {
+        await db.runTransaction(async (transaction) => {
+            const now = admin.firestore.FieldValue.serverTimestamp();
+
+            // References to the specific documents in subcollections
+            const currentUserFollowingDocRef = currentUserRef.collection('following').doc(targetUserId);
+            const targetUserFollowersDocRef = targetUserRef.collection('followers').doc(userId);
+
+            if (actionType === 'followUser') {
+                // Check if already following to prevent redundant writes
+                const currentUserFollowingDoc = await transaction.get(currentUserFollowingDocRef);
+                if (currentUserFollowingDoc.exists) {
+                    console.log(`User ${userId} already follows ${targetUserId}. No action needed.`);
+                    return { message: 'Already following.' }; // Transaction will still commit successfully
+                }
+
+                // Add to current user's 'following' subcollection
+                transaction.set(currentUserFollowingDocRef, { createdAt: now });
+                // Add to target user's 'followers' subcollection
+                transaction.set(targetUserFollowersDocRef, { createdAt: now });
+
+                // Increment counts on main user documents
+                transaction.update(currentUserRef, {
+                    followingCount: admin.firestore.FieldValue.increment(1)
+                });
+                transaction.update(targetUserRef, {
+                    followersCount: admin.firestore.FieldValue.increment(1)
+                });
+
+                console.log(`User ${userId} successfully followed ${targetUserId}.`);
+                return { message: 'User followed successfully.' };
+
+            } else if (actionType === 'unfollowUser') {
+                // Check if currently following to prevent redundant writes
+                const currentUserFollowingDoc = await transaction.get(currentUserFollowingDocRef);
+                if (!currentUserFollowingDoc.exists) {
+                    console.log(`User ${userId} does not follow ${targetUserId}. No action needed.`);
+                    return { message: 'Not currently following.' }; // Transaction will still commit successfully
+                }
+
+                // Delete from current user's 'following' subcollection
+                transaction.delete(currentUserFollowingDocRef);
+                // Delete from target user's 'followers' subcollection
+                transaction.delete(targetUserFollowersDocRef);
+
+                // Decrement counts on main user documents (ensure not to go below 0)
+                transaction.update(currentUserRef, {
+                    followingCount: admin.firestore.FieldValue.increment(-1)
+                });
+                transaction.update(targetUserRef, {
+                    followersCount: admin.firestore.FieldValue.increment(-1)
+                });
+
+                console.log(`User ${userId} successfully unfollowed ${targetUserId}.`);
+                return { message: 'User unfollowed successfully.' };
+            }
+        });
+
+        // The transaction itself handles the return value, so we return a generic success message here
+        return { success: true, message: `${actionType === 'followUser' ? 'Follow' : 'Unfollow'} action completed.` };
+
+    } catch (error) {
+        console.error(`Error in handleFollowUnfollow for ${userId} and ${targetUserId} (${actionType}):`, error);
+        // Rethrow an HTTPS error for the client
+        throwHttpsError('internal', 'Failed to update follow status.', error.message);
+    }
+}
+
+// async function handleGetUserPosts(payload, userId) {
+//     const {
+//         profileUserId,
+//         limit = 10,
+//         lastPostId = null,
+//         includePrivate = false
+//     } = payload;
 //
+//     const targetId = profileUserId || userId; // If no profileUserId provided, get current user's posts
+//
+//     // Basic validation
 //     if (!targetId || typeof targetId !== 'string') {
-//         throwHttpsError('invalid-argument', 'A valid user ID is required to fetch a profile.');
+//         throwHttpsError('invalid-argument', 'A valid user ID is required to fetch posts.');
+//     }
+//     if (typeof limit !== 'number' || limit < 1 || limit > 50) {
+//         throwHttpsError('invalid-argument', 'Limit must be a number between 1 and 50.');
+//     }
+//     if (lastPostId !== null && typeof lastPostId !== 'string') {
+//         throwHttpsError('invalid-argument', 'lastPostId must be a string or null.');
 //     }
 //
 //     try {
+//         // Check if target user exists
 //         const userDoc = await db.collection(USERS_COLLECTION).doc(targetId).get();
-//
 //         if (!userDoc.exists) {
-//             throwHttpsError('not-found', 'User profile not found.');
+//             throwHttpsError('not-found', 'User not found.');
 //         }
 //
-//         const profileData = userDoc.data();
-//         // Remove sensitive data before sending to client if applicable
-//         delete profileData.email; // Example: Don't send user's full email to public profiles
+//         // Build query
+//         let postsQuery = db.collection(POSTS_COLLECTION)
+//             .where('userId', '==', targetId)
+//             .orderBy('createdAt', 'desc');
 //
-//         console.log(`Fetched profile for user ${targetId}`);
-//         return { profile: profileData, message: 'Profile fetched successfully.' };
+//         // Handle pagination
+//         if (lastPostId) {
+//             const lastPostSnapshot = await db.collection(POSTS_COLLECTION).doc(lastPostId).get();
+//             if (lastPostSnapshot.exists) {
+//                 postsQuery = postsQuery.startAfter(lastPostSnapshot);
+//             } else {
+//                 console.warn(`lastPostId ${lastPostId} not found, fetching from start.`);
+//             }
+//         }
+//
+//         // Fetch posts with one extra to check for hasMore
+//         const postsSnapshot = await postsQuery.limit(limit + 1).get();
+//         const postDocs = postsSnapshot.docs.slice(0, limit);
+//         const hasMore = postsSnapshot.docs.length > limit;
+//
+//         // Process posts and add user interaction data
+//         const posts = await Promise.all(postDocs.map(async (doc) => {
+//             const postData = { id: doc.id, ...doc.data() };
+//
+//             try {
+//                 // Check if requesting user liked this post
+//                 const likeDocRef = db.collection(POSTS_COLLECTION)
+//                     .doc(doc.id)
+//                     .collection('likes')
+//                     .doc(userId);
+//                 const likeDoc = await likeDocRef.get();
+//                 postData.likedByCurrentUser = likeDoc.exists;
+//
+//                 // Check if requesting user bookmarked this post
+//                 const bookmarkDocRef = db.collection(USERS_COLLECTION)
+//                     .doc(userId)
+//                     .collection('bookmarks')
+//                     .doc(doc.id);
+//                 const bookmarkDoc = await bookmarkDocRef.get();
+//                 postData.bookmarkedByCurrentUser = bookmarkDoc.exists;
+//
+//                 // If viewing another user's posts, remove sensitive data
+//                 if (profileUserId && profileUserId !== userId && !includePrivate) {
+//                     // Remove any sensitive fields if needed
+//                     // For now, keeping all post data public
+//                 }
+//
+//             } catch (err) {
+//                 console.error(`Error checking like/bookmark for post ${doc.id}:`, err);
+//                 postData.likedByCurrentUser = false;
+//                 postData.bookmarkedByCurrentUser = false;
+//             }
+//
+//             return postData;
+//         }));
+//
+//         const lastVisibleDoc = postDocs.length > 0 ? postDocs[postDocs.length - 1] : null;
+//
+//         console.log(`Fetched ${posts.length} posts for user ${targetId} (requested by ${userId})`);
+//
+//         return {
+//             posts,
+//             count: posts.length,
+//             hasMore,
+//             lastDocId: lastVisibleDoc ? lastVisibleDoc.id : null,
+//             userId: targetId,
+//             message: 'User posts fetched successfully.'
+//         };
+//
 //     } catch (error) {
-//         console.error(`Error in handleGetProfile for ${targetId}:`, error);
-//         throwHttpsError('internal', 'Failed to fetch profile.', error.message);
+//         console.error(`Error in handleGetUserPosts for ${targetId}:`, error);
+//         if (error instanceof functions.https.HttpsError) {
+//             throw error;
+//         }
+//         throwHttpsError('internal', 'Failed to fetch user posts.', error.message);
 //     }
 // }
-//
 // async function handleUpdateProfile(payload, userId) {
 //     const { displayName, bio, profilePicUrl } = payload; // Only allow specific fields to be updated
 //
