@@ -78,8 +78,8 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
         //         return await handleFollowUser(payload, userId);
             case 'getProfile':
                 return await handleGetProfile(payload, userId);
-            // case 'getUserPosts':
-            //     return await handleGetUserPosts(payload, userId);
+            case 'getUserPosts':
+                return await handleGetUserPosts(payload, userId);
         //     case 'updateProfile':
         //         return await handleUpdateProfile(payload, userId);
         //     // Add more actions as your app grows
@@ -1178,111 +1178,102 @@ async function handleFollowUnfollow(payload, userId, actionType) {
     }
 }
 
-// async function handleGetUserPosts(payload, userId) {
-//     const {
-//         profileUserId,
-//         limit = 10,
-//         lastPostId = null,
-//         includePrivate = false
-//     } = payload;
-//
-//     const targetId = profileUserId || userId; // If no profileUserId provided, get current user's posts
-//
-//     // Basic validation
-//     if (!targetId || typeof targetId !== 'string') {
-//         throwHttpsError('invalid-argument', 'A valid user ID is required to fetch posts.');
-//     }
-//     if (typeof limit !== 'number' || limit < 1 || limit > 50) {
-//         throwHttpsError('invalid-argument', 'Limit must be a number between 1 and 50.');
-//     }
-//     if (lastPostId !== null && typeof lastPostId !== 'string') {
-//         throwHttpsError('invalid-argument', 'lastPostId must be a string or null.');
-//     }
-//
-//     try {
-//         // Check if target user exists
-//         const userDoc = await db.collection(USERS_COLLECTION).doc(targetId).get();
-//         if (!userDoc.exists) {
-//             throwHttpsError('not-found', 'User not found.');
-//         }
-//
-//         // Build query
-//         let postsQuery = db.collection(POSTS_COLLECTION)
-//             .where('userId', '==', targetId)
-//             .orderBy('createdAt', 'desc');
-//
-//         // Handle pagination
-//         if (lastPostId) {
-//             const lastPostSnapshot = await db.collection(POSTS_COLLECTION).doc(lastPostId).get();
-//             if (lastPostSnapshot.exists) {
-//                 postsQuery = postsQuery.startAfter(lastPostSnapshot);
-//             } else {
-//                 console.warn(`lastPostId ${lastPostId} not found, fetching from start.`);
-//             }
-//         }
-//
-//         // Fetch posts with one extra to check for hasMore
-//         const postsSnapshot = await postsQuery.limit(limit + 1).get();
-//         const postDocs = postsSnapshot.docs.slice(0, limit);
-//         const hasMore = postsSnapshot.docs.length > limit;
-//
-//         // Process posts and add user interaction data
-//         const posts = await Promise.all(postDocs.map(async (doc) => {
-//             const postData = { id: doc.id, ...doc.data() };
-//
-//             try {
-//                 // Check if requesting user liked this post
-//                 const likeDocRef = db.collection(POSTS_COLLECTION)
-//                     .doc(doc.id)
-//                     .collection('likes')
-//                     .doc(userId);
-//                 const likeDoc = await likeDocRef.get();
-//                 postData.likedByCurrentUser = likeDoc.exists;
-//
-//                 // Check if requesting user bookmarked this post
-//                 const bookmarkDocRef = db.collection(USERS_COLLECTION)
-//                     .doc(userId)
-//                     .collection('bookmarks')
-//                     .doc(doc.id);
-//                 const bookmarkDoc = await bookmarkDocRef.get();
-//                 postData.bookmarkedByCurrentUser = bookmarkDoc.exists;
-//
-//                 // If viewing another user's posts, remove sensitive data
-//                 if (profileUserId && profileUserId !== userId && !includePrivate) {
-//                     // Remove any sensitive fields if needed
-//                     // For now, keeping all post data public
-//                 }
-//
-//             } catch (err) {
-//                 console.error(`Error checking like/bookmark for post ${doc.id}:`, err);
-//                 postData.likedByCurrentUser = false;
-//                 postData.bookmarkedByCurrentUser = false;
-//             }
-//
-//             return postData;
-//         }));
-//
-//         const lastVisibleDoc = postDocs.length > 0 ? postDocs[postDocs.length - 1] : null;
-//
-//         console.log(`Fetched ${posts.length} posts for user ${targetId} (requested by ${userId})`);
-//
-//         return {
-//             posts,
-//             count: posts.length,
-//             hasMore,
-//             lastDocId: lastVisibleDoc ? lastVisibleDoc.id : null,
-//             userId: targetId,
-//             message: 'User posts fetched successfully.'
-//         };
-//
-//     } catch (error) {
-//         console.error(`Error in handleGetUserPosts for ${targetId}:`, error);
-//         if (error instanceof functions.https.HttpsError) {
-//             throw error;
-//         }
-//         throwHttpsError('internal', 'Failed to fetch user posts.', error.message);
-//     }
-// }
+async function handleGetUserPosts(payload, userId) {
+    const {
+        profileUserId,
+        limit = 10,
+        lastPostId = null,
+        includePrivate = false
+    } = payload;
+
+    const targetId = profileUserId || userId;
+
+    if (!targetId || typeof targetId !== 'string') {
+        throwHttpsError('invalid-argument', 'A valid user ID is required to fetch posts.');
+    }
+    if (typeof limit !== 'number' || limit < 1 || limit > 50) {
+        throwHttpsError('invalid-argument', 'Limit must be a number between 1 and 50.');
+    }
+    if (lastPostId !== null && typeof lastPostId !== 'string') {
+        throwHttpsError('invalid-argument', 'lastPostId must be a string or null.');
+    }
+
+    try {
+        const userDoc = await db.collection(USERS_COLLECTION).doc(targetId).get();
+        if (!userDoc.exists) {
+            throwHttpsError('not-found', 'User not found.');
+        }
+
+        let postsQuery = db.collection(POSTS_COLLECTION)
+            .where('userId', '==', targetId)
+            .orderBy('createdAt', 'desc');
+
+        if (lastPostId) {
+            const lastPostSnapshot = await db.collection(POSTS_COLLECTION).doc(lastPostId).get();
+            if (lastPostSnapshot.exists) {
+                postsQuery = postsQuery.startAfter(lastPostSnapshot);
+            } else {
+                console.warn(`lastPostId ${lastPostId} not found, fetching from start.`);
+            }
+        }
+
+        const postsSnapshot = await postsQuery.limit(limit + 1).get();
+        const postDocs = postsSnapshot.docs.slice(0, limit);
+        const hasMore = postsSnapshot.docs.length > limit;
+
+        const posts = await Promise.all(postDocs.map(async (doc) => {
+            const postData = { id: doc.id, ...doc.data() };
+
+            try {
+                const likeDocRef = db.collection(POSTS_COLLECTION)
+                    .doc(doc.id)
+                    .collection('likes')
+                    .doc(userId); // Use requesting user's ID
+                const likeDoc = await likeDocRef.get();
+                postData.likedByCurrentUser = likeDoc.exists;
+
+                const bookmarkDocRef = db.collection(USERS_COLLECTION)
+                    .doc(userId) // Use requesting user's ID
+                    .collection('bookmarks')
+                    .doc(doc.id);
+                const bookmarkDoc = await bookmarkDocRef.get();
+                postData.bookmarkedByCurrentUser = bookmarkDoc.exists;
+
+                if (profileUserId && profileUserId !== userId && !includePrivate) {
+                    // Remove any sensitive fields if needed
+                    // For now, keeping all post data public
+                }
+
+            } catch (err) {
+                console.error(`Error checking like/bookmark for post ${doc.id}:`, err);
+                postData.likedByCurrentUser = false;
+                postData.bookmarkedByCurrentUser = false;
+            }
+
+            return postData;
+        }));
+
+        const lastVisibleDoc = postDocs.length > 0 ? postDocs[postDocs.length - 1] : null;
+
+        console.log(`Fetched ${posts.length} posts for user ${targetId} (requested by ${userId})`);
+
+        return {
+            posts,
+            count: posts.length,
+            hasMore,
+            lastDocId: lastVisibleDoc ? lastVisibleDoc.id : null,
+            userId: targetId,
+            message: 'User posts fetched successfully.'
+        };
+
+    } catch (error) {
+        console.error(`Error in handleGetUserPosts for ${targetId}:`, error);
+        if (error instanceof functions.https.HttpsError) {
+            throw error;
+        }
+        throwHttpsError('internal', 'Failed to fetch user posts.', error.message);
+    }
+}
 // async function handleUpdateProfile(payload, userId) {
 //     const { displayName, bio, profilePicUrl } = payload; // Only allow specific fields to be updated
 //
