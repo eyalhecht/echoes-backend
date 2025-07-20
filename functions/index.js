@@ -1,7 +1,10 @@
 // functions/index.js
-const functions = require('firebase-functions');
-const admin = require('firebase-admin');
-const { GeoPoint } = require('firebase-admin/firestore');
+import 'dotenv/config';
+import functions from 'firebase-functions';
+import admin from 'firebase-admin';
+import { GeoPoint } from 'firebase-admin/firestore';
+import vision from '@google-cloud/vision';
+import OpenAI from 'openai';
 
 // --- Initialize Firebase Admin SDK ---
 // This initializes the SDK with your Firebase project's credentials automatically
@@ -27,12 +30,12 @@ const throwHttpsError = (code, message, details) => {
 
 // --- Your Main API  Gateway Callable Function ---
 // This function handles all client-side API calls and dispatches to appropriate logic.
-exports.apiGateway = functions.https.onCall(async (request, response) => {
+export const apiGateway = functions.https.onCall(async (request, response) => {
     // 1. **Authentication Check (Automatic with onCall)**
     //    context.auth is automatically populated if the user is signed in with Firebase Auth.
     if (!request.auth) {
         // If not authenticated, throw an error. The client SDK will receive 'unauthenticated' error code.
-        throwHttpsError('unauthenticated', 'Authentication required for tzx88888888888chis action.');
+        throwHttpsError('unauthenticated', 'Authentication required for this action.');
     }
 
     const userId = request.auth.uid; // The unique ID of the authenticated user
@@ -54,6 +57,9 @@ exports.apiGateway = functions.https.onCall(async (request, response) => {
         switch (action) {
         //     case 'createPost':
         //         return await handleCreatePost(payload, userId);
+            case 'followUser':
+            case 'unfollowUser':
+                return handleFollowUnfollow(payload, userId, action);
             case 'getFeed':
                 return await handleGetFeed(payload, userId);
             case 'createPost':
@@ -70,8 +76,10 @@ exports.apiGateway = functions.https.onCall(async (request, response) => {
         //         return await handleAddComment(payload, userId);
         //     case 'followUser':
         //         return await handleFollowUser(payload, userId);
-        //     case 'getProfile':
-        //         return await handleGetProfile(payload, userId);
+            case 'getProfile':
+                return await handleGetProfile(payload, userId);
+            case 'getUserPosts':
+                return await handleGetUserPosts(payload, userId);
         //     case 'updateProfile':
         //         return await handleUpdateProfile(payload, userId);
         //     // Add more actions as your app grows
@@ -298,8 +306,62 @@ async function handleCreatePost(payload, userId) {
         const userDisplayName = userData.displayName || userDoc.id; // Fallback to UID
         const userProfilePicUrl = userData.profilePictureUrl || null; // Get user's profile picture
 
+        // let imageLabels = [];
+        // let safeSearchLikelihood = null;
+        // if (type === 'photo') { // Assuming video thumbnails or frames can be analyzed
+        //     const imageUrlToAnalyze = fileUrls[0];
+        //     if (imageUrlToAnalyze) {
+        //         try {
+        //             const [result] = await client.annotateImage({
+        //                 image: { source: { imageUri: imageUrlToAnalyze } },
+        //                 features: [
+        //                     { type: 'LABEL_DETECTION' }, // Detect broad labels (e.g., "car", "nature")
+        //                     { type: 'SAFE_SEARCH_DETECTION' }, // Detect explicit content
+        //                     // { type: 'WEB_DETECTION' }, // Find web entities related to the image
+        //                     // { type: 'TEXT_DETECTION' }, // Detect text in the image (OCR)
+        //                     { type: 'FACE_DETECTION' }, // Detect faces
+        //                     { type: 'LANDMARK_DETECTION' }, // Detect famous landmarks
+        //                 ],
+        //             });
+        //             console.log("reesultsfaceAnnotations:", JSON.stringify(result, null, 2))
+        //
+        //             // Extract labels
+        //             if (result.labelAnnotations) {
+        //                 imageLabels = result.labelAnnotations
+        //                     .filter(label => label.score > 0.4) // Filter for higher confidence scores
+        //                     .map(label => label.description);
+        //             }
+        //
+        //             // Extract Safe Search results
+        //             if (result.safeSearchAnnotation) {
+        //                 safeSearchLikelihood = {
+        //                     adult: result.safeSearchAnnotation.adult,
+        //                     spoof: result.safeSearchAnnotation.spoof,
+        //                     medical: result.safeSearchAnnotation.medical,
+        //                     violence: result.safeSearchAnnotation.violence,
+        //                     racy: result.safeSearchAnnotation.racy,
+        //                 };
+        //             }
+        //
+        //         } catch (visionError) {
+        //             console.warn(`Cloud Vision API error for URL ${imageUrlToAnalyze}:`, visionError);
+        //             // Decide how to handle Vision errors:
+        //             // - You could throw an HttpsError to stop post creation if Vision is critical.
+        //             // - Or, you can just log it and proceed without image info, as shown here.
+        //         }
+        //     }
+        // }
+
+
         // --- 3. Create New Post Document in Firestore ---
         const newPostRef = db.collection(POSTS_COLLECTION).doc(); // Auto-generate ID
+
+        // let AiMetadata = null;
+        // AiMetadata = await analyzePhoto(fileUrls[0], {
+        //     userContext: '',
+        //     analysisDepth: 'comprehensive'
+        // });
+        // console.log('Photo metadata:', AiMetadata);
 
         const postData = {
             userId: userId,
@@ -308,13 +370,17 @@ async function handleCreatePost(payload, userId) {
             description: description.trim(),
             type: type,
             files: fileUrls, // Array of file URLs (or YouTube URL)
-            location: new GeoPoint(location._lat, location._long), // Store as GeoPoint or null
+            location: (location && typeof location._lat === 'number' && typeof location._long === 'number')
+                ? new admin.firestore.GeoPoint(location._lat, location._long)
+                : null,
             year: year.sort((a, b) => a - b), // Ensure years are sorted
             likesCount: 0,
             commentsCount: 0,
             bookmarksCount: 0,
             createdAt: new Date(), // Server timestamp is best practice
             updatedAt: new Date(),
+            // AiMetadata
+            // safeSearch: safeSearchLikelihood,
         };
 
         await newPostRef.set(postData);
@@ -330,6 +396,298 @@ async function handleCreatePost(payload, userId) {
         throwHttpsError('internal', 'Failed to create post.', error.message);
     }
 }
+
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+});
+
+// System prompt for consistent, professional analysis
+const SYSTEM_PROMPT = `You are an expert archivist and cultural heritage specialist with deep knowledge of:
+- Dublin Core, VRA Core, and CCO (Cataloging Cultural Objects) standards
+- Getty Vocabulary Program (AAT, TGN, ULAN, CONA)
+- Library of Congress Subject Headings (LCSH)
+- International archival and museum cataloging practices
+
+Your task is to analyze photographs and provide scholarly, precise metadata following established archival standards. Always:
+1. Use controlled vocabularies when available
+2. Provide context and cultural significance
+3. Follow professional cataloging protocols
+4. Be academically rigorous yet accessible
+5. Consider multiple perspectives and interpretations`;
+
+// User prompt template
+const USER_PROMPT = `Please analyze this photograph and provide comprehensive archival metadata following international cataloging standards.
+
+Return a JSON object with the following structure:
+
+{
+  "title": "Descriptive title following CCO guidelines",
+  "creator": {
+    "name": "Photographer/creator name if identifiable",
+    "role": "photographer|artist|unknown",
+    "certainty": "definite|probable|possible|unknown"
+  },
+  "date": {
+    "display": "Human-readable date (e.g., 'circa 1920s', 'May 15, 1965')",
+    "earliest": "YYYY-MM-DD",
+    "latest": "YYYY-MM-DD",
+    "certainty": "definite|probable|approximate"
+  },
+  "medium": {
+    "type": "Specific photographic technique",
+    "format": "Physical format if determinable",
+    "process": "Technical process used"
+  },
+  "subject": {
+    "primary": ["Main subjects using AAT/LCSH terms"],
+    "secondary": ["Additional subjects"],
+    "depicted": ["Specific people, places, or things shown"],
+    "conceptual": ["Abstract concepts or themes"]
+  },
+  "location": {
+    "depicted": {
+      "display": "Human-readable location",
+      "city": "City name",
+      "region": "State/Province",
+      "country": "Country",
+      "coordinates": {"lat": null, "lng": null},
+      "tgn_id": "Getty TGN ID if applicable"
+    },
+    "created": "Where photo was taken if different from depicted"
+  },
+  "event": {
+    "name": "Specific event if identifiable",
+    "type": "Event category",
+    "date": "Event date if different from photo date",
+    "significance": "Historical importance"
+  },
+  "style": {
+    "period": "Historical/artistic period",
+    "movement": "Artistic movement if applicable",
+    "technique": "Photographic technique or approach"
+  },
+  "cultural_significance": {
+    "historical": "Historical context and importance",
+    "cultural": "Cultural meaning and impact",
+    "artistic": "Artistic significance",
+    "social": "Social context and implications"
+  },
+  "physical_description": {
+    "composition": "Description of visual composition",
+    "condition": "Apparent condition if assessable",
+    "inscriptions": "Any visible text or markings",
+  },
+  "related_works": "Similar or related photographs/artworks",
+  "tags": {
+    "subject": ["Subject-based tags"],
+    "temporal": ["Time-period tags"],
+    "geographic": ["Location-based tags"],
+    "stylistic": ["Style/technique tags"],
+    "cultural": ["Cultural/social tags"]
+  },
+  "cataloging_notes": "Additional scholarly notes for archivists"
+}
+
+Ensure all classifications follow professional standards and use appropriate controlled vocabularies.`;
+
+
+export async function analyzePhoto(photoUrl, options = {}) {
+    const {
+        userContext = '',
+        analysisDepth = 'standard',
+        maxRetries = 3
+    } = options;
+
+    let userPrompt = USER_PROMPT;
+    if (userContext) {
+        userPrompt += `\n\nAdditional context: ${userContext}`;
+    }
+
+    if (analysisDepth === 'basic') {
+        userPrompt += '\n\nProvide essential metadata only (title, date, location, primary subjects, and key tags).';
+    } else if (analysisDepth === 'comprehensive') {
+        userPrompt += '\n\nProvide exhaustive analysis including all possible interpretations, detailed cultural context, and comprehensive controlled vocabulary terms.';
+    }
+
+    let attempt = 0;
+    while (attempt < maxRetries) {
+        try {
+            const response = await openai.chat.completions.create({
+                model: "gpt-4o",
+                messages: [
+                    {
+                        role: "system",
+                        content: SYSTEM_PROMPT
+                    },
+                    {
+                        role: "user",
+                        content: [
+                            {
+                                type: "text",
+                                text: userPrompt
+                            },
+                            {
+                                type: "image_url",
+                                image_url: {
+                                    url: photoUrl,
+                                    detail: analysisDepth === 'comprehensive' ? 'high' : 'auto'
+                                }
+                            }
+                        ]
+                    }
+                ],
+                temperature: 0.3, // Lower temperature for more consistent cataloging
+                max_tokens: analysisDepth === 'comprehensive' ? 4000 : 2000,
+                response_format: { type: "json_object" }
+            });
+
+            const result = JSON.parse(response.choices[0].message.content);
+
+            // Validate and clean the result
+            return validateAndCleanResult(result);
+
+        } catch (error) {
+            attempt++;
+            console.error(`Attempt ${attempt} failed:`, error);
+
+            if (attempt >= maxRetries) {
+                throw new Error(`Failed to analyze photo after ${maxRetries} attempts: ${error.message}`);
+            }
+
+            // Wait before retrying (exponential backoff)
+            await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+        }
+    }
+}
+
+/**
+ * Validates and cleans the API response
+ */
+function validateAndCleanResult(result) {
+    // Ensure required fields exist
+    const cleaned = {
+        title: result.title || 'Untitled Photograph',
+        creator: {
+            name: result.creator?.name || 'Unknown',
+            role: result.creator?.role || 'unknown',
+            certainty: result.creator?.certainty || 'unknown'
+        },
+        date: {
+            display: result.date?.display || 'Date unknown',
+            earliest: result.date?.earliest || null,
+            latest: result.date?.latest || null,
+            certainty: result.date?.certainty || 'unknown'
+        },
+        medium: result.medium || { type: 'Photograph', format: 'Unknown', process: 'Unknown' },
+        subject: {
+            primary: Array.isArray(result.subject?.primary) ? result.subject.primary : [],
+            secondary: Array.isArray(result.subject?.secondary) ? result.subject.secondary : [],
+            depicted: Array.isArray(result.subject?.depicted) ? result.subject.depicted : [],
+            conceptual: Array.isArray(result.subject?.conceptual) ? result.subject.conceptual : []
+        },
+        location: result.location || {},
+        event: result.event || null,
+        style: result.style || {},
+        cultural_significance: result.cultural_significance || {},
+        physical_description: result.physical_description || {},
+        related_works: result.related_works || null,
+        tags: {
+            subject: Array.isArray(result.tags?.subject) ? result.tags.subject : [],
+            temporal: Array.isArray(result.tags?.temporal) ? result.tags.temporal : [],
+            geographic: Array.isArray(result.tags?.geographic) ? result.tags.geographic : [],
+            stylistic: Array.isArray(result.tags?.stylistic) ? result.tags.stylistic : [],
+            cultural: Array.isArray(result.tags?.cultural) ? result.tags.cultural : []
+        },
+        cataloging_notes: result.cataloging_notes || ''
+    };
+
+    return cleaned;
+}
+
+/**
+ * Simplified analysis for quick tagging
+ */
+export async function quickAnalyzePhoto(photoUrl) {
+    const quickPrompt = `Analyze this photo and provide:
+  1. A brief descriptive title
+  2. Estimated date/period
+  3. Location if identifiable
+  4. 5-10 relevant tags
+  
+  Return as JSON: { title, date, location, tags: [] }`;
+
+    try {
+        const response = await openai.chat.completions.create({
+            model: "gpt-4-vision-preview",
+            messages: [
+                {
+                    role: "user",
+                    content: [
+                        { type: "text", text: quickPrompt },
+                        { type: "image_url", image_url: { url: photoUrl } }
+                    ]
+                }
+            ],
+            temperature: 0.5,
+            max_tokens: 500,
+            response_format: { type: "json_object" }
+        });
+
+        return JSON.parse(response.choices[0].message.content);
+    } catch (error) {
+        console.error('Quick analysis failed:', error);
+        throw error;
+    }
+}
+
+/**
+ * Batch analyze multiple photos
+ */
+export async function batchAnalyzePhotos(photoUrls, options = {}) {
+    const results = [];
+    const { concurrency = 3 } = options;
+
+    // Process in chunks to avoid rate limits
+    for (let i = 0; i < photoUrls.length; i += concurrency) {
+        const chunk = photoUrls.slice(i, i + concurrency);
+        const chunkResults = await Promise.allSettled(
+            chunk.map(url => analyzePhoto(url, options))
+        );
+
+        results.push(...chunkResults.map((result, index) => ({
+            url: chunk[index],
+            success: result.status === 'fulfilled',
+            data: result.status === 'fulfilled' ? result.value : null,
+            error: result.status === 'rejected' ? result.reason.message : null
+        })));
+
+        // Rate limit pause between chunks
+        if (i + concurrency < photoUrls.length) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+    }
+
+    return results;
+}
+
+// Usage example:
+/*
+try {
+  const metadata = await analyzePhoto('https://example.com/photo.jpg', {
+    userContext: 'This photo was found in my grandmother\'s album from Europe',
+    analysisDepth: 'comprehensive'
+  });
+
+  console.log('Photo metadata:', metadata);
+
+  // Quick analysis for tagging
+  const quickTags = await quickAnalyzePhoto('https://example.com/photo.jpg');
+  console.log('Quick tags:', quickTags);
+
+} catch (error) {
+  console.error('Analysis failed:', error);
+}
+*/
 
 async function handleCreateUserProfile(payload, userId) {
     const { displayName, photoURL } = payload || {};
@@ -654,33 +1012,268 @@ async function handleToggleBookmark(payload, userId) {
 //     }
 // }
 //
-// async function handleGetProfile(payload, userId) {
-//     const { profileUserId } = payload;
-//     const targetId = profileUserId || userId; // If no ID provided, get current user's profile
-//
-//     if (!targetId || typeof targetId !== 'string') {
-//         throwHttpsError('invalid-argument', 'A valid user ID is required to fetch a profile.');
-//     }
-//
-//     try {
-//         const userDoc = await db.collection(USERS_COLLECTION).doc(targetId).get();
-//
-//         if (!userDoc.exists) {
-//             throwHttpsError('not-found', 'User profile not found.');
-//         }
-//
-//         const profileData = userDoc.data();
-//         // Remove sensitive data before sending to client if applicable
-//         delete profileData.email; // Example: Don't send user's full email to public profiles
-//
-//         console.log(`Fetched profile for user ${targetId}`);
-//         return { profile: profileData, message: 'Profile fetched successfully.' };
-//     } catch (error) {
-//         console.error(`Error in handleGetProfile for ${targetId}:`, error);
-//         throwHttpsError('internal', 'Failed to fetch profile.', error.message);
-//     }
-// }
-//
+async function handleGetProfile(payload, userId) {
+    const { profileUserId } = payload;
+    // Determine the target user ID: from payload for other profiles, or current user's ID
+    const targetId = profileUserId || userId;
+
+    if (!targetId || typeof targetId !== 'string') {
+        throwHttpsError('invalid-argument', 'A valid user ID is required to fetch a profile.');
+    }
+
+    try {
+        const userDocRef = db.collection(USERS_COLLECTION).doc(targetId);
+        const userDoc = await userDocRef.get();
+
+        if (!userDoc.exists) {
+            throwHttpsError('not-found', 'User profile not found.');
+        }
+
+        const profileData = userDoc.data();
+
+        // --- Fetch Followers List (IDs) ---
+        const followersSnapshot = await userDocRef.collection('followers').get();
+        // Map over the documents to get an array of their IDs
+        const followerIds = followersSnapshot.docs.map(doc => doc.id);
+        profileData.followers = followerIds; // Add the array of IDs to profileData
+        profileData.followersCount = followerIds.length; // You can still provide the count
+
+        // --- Fetch Following List (IDs) ---
+        const followingSnapshot = await userDocRef.collection('following').get();
+        // Map over the documents to get an array of their IDs
+        const followingIds = followingSnapshot.docs.map(doc => doc.id);
+        profileData.following = followingIds; // Add the array of IDs to profileData
+        profileData.followingCount = followingIds.length; // You can still provide the count
+
+        // Optional: Also check if the *current authenticated user* is following this profile
+        let isFollowedByCurrentUser = false;
+        if (userId && userId !== targetId) { // Only relevant if viewing someone else's profile
+            isFollowedByCurrentUser = followerIds.includes(userId);
+            // This is more efficient than a separate Firestore read if followerIds is already fetched
+            // const followerDoc = await userDocRef.collection('followers').doc(userId).get();
+            // isFollowedByCurrentUser = followerDoc.exists;
+        }
+        profileData.isFollowedByCurrentUser = isFollowedByCurrentUser;
+
+
+        // Remove sensitive or unnecessary data for public profiles
+        if (profileUserId) { // If profileUserId is provided, it means it's a public profile request
+            delete profileData.email;
+            delete profileData.createdAt;
+            delete profileData.updatedAt;
+            // You might also want to remove 'followers' and 'following' arrays themselves
+            // if you don't want them exposed directly on public profiles,
+            // but just the counts. This depends on your app's privacy requirements.
+            // If you only want counts, comment out the lines that set profileData.followers and profileData.following.
+        }
+
+        console.log(`Fetched profile for user ${targetId} with data ${JSON.stringify(profileData)}`);
+        return { profile: profileData, message: 'Profile fetched successfully.' };
+
+    } catch (error) {
+        console.error(`Error in handleGetProfile for ${targetId}:`, error);
+        throwHttpsError('internal', 'Failed to fetch profile.', error.message);
+    }
+}
+
+async function handleFollowUnfollow(payload, userId, actionType) {
+    const { targetUserId } = payload;
+
+    // 1. Basic Validation
+    if (!userId) {
+        throwHttpsError('unauthenticated', 'You must be authenticated to perform this action.');
+    }
+    if (!targetUserId || typeof targetUserId !== 'string') {
+        throwHttpsError('invalid-argument', 'A valid target user ID is required.');
+    }
+    if (userId === targetUserId) {
+        throwHttpsError('invalid-argument', 'You cannot follow or unfollow yourself.');
+    }
+    if (actionType !== 'followUser' && actionType !== 'unfollowUser') {
+        throwHttpsError('invalid-argument', 'Invalid action type. Must be "followUser" or "unfollowUser".');
+    }
+
+    const currentUserRef = db.collection(USERS_COLLECTION).doc(userId);
+    const targetUserRef = db.collection(USERS_COLLECTION).doc(targetUserId);
+
+    // Check if both users exist (optional but good for data integrity)
+    const [currentUserDoc, targetUserDoc] = await Promise.all([
+        currentUserRef.get(),
+        targetUserRef.get()
+    ]);
+
+    if (!currentUserDoc.exists) {
+        throwHttpsError('not-found', 'Your user profile was not found.');
+    }
+    if (!targetUserDoc.exists) {
+        throwHttpsError('not-found', 'The target user profile was not found.');
+    }
+
+    // 2. Perform the transaction
+    try {
+        await db.runTransaction(async (transaction) => {
+            const now = admin.firestore.FieldValue.serverTimestamp();
+
+            // References to the specific documents in subcollections
+            const currentUserFollowingDocRef = currentUserRef.collection('following').doc(targetUserId);
+            const targetUserFollowersDocRef = targetUserRef.collection('followers').doc(userId);
+
+            if (actionType === 'followUser') {
+                // Check if already following to prevent redundant writes
+                const currentUserFollowingDoc = await transaction.get(currentUserFollowingDocRef);
+                if (currentUserFollowingDoc.exists) {
+                    console.log(`User ${userId} already follows ${targetUserId}. No action needed.`);
+                    return { message: 'Already following.' }; // Transaction will still commit successfully
+                }
+
+                // Add to current user's 'following' subcollection
+                transaction.set(currentUserFollowingDocRef, { createdAt: now });
+                // Add to target user's 'followers' subcollection
+                transaction.set(targetUserFollowersDocRef, { createdAt: now });
+
+                // Increment counts on main user documents
+                transaction.update(currentUserRef, {
+                    followingCount: admin.firestore.FieldValue.increment(1)
+                });
+                transaction.update(targetUserRef, {
+                    followersCount: admin.firestore.FieldValue.increment(1)
+                });
+
+                console.log(`User ${userId} successfully followed ${targetUserId}.`);
+                return { message: 'User followed successfully.' };
+
+            } else if (actionType === 'unfollowUser') {
+                // Check if currently following to prevent redundant writes
+                const currentUserFollowingDoc = await transaction.get(currentUserFollowingDocRef);
+                if (!currentUserFollowingDoc.exists) {
+                    console.log(`User ${userId} does not follow ${targetUserId}. No action needed.`);
+                    return { message: 'Not currently following.' }; // Transaction will still commit successfully
+                }
+
+                // Delete from current user's 'following' subcollection
+                transaction.delete(currentUserFollowingDocRef);
+                // Delete from target user's 'followers' subcollection
+                transaction.delete(targetUserFollowersDocRef);
+
+                // Decrement counts on main user documents (ensure not to go below 0)
+                transaction.update(currentUserRef, {
+                    followingCount: admin.firestore.FieldValue.increment(-1)
+                });
+                transaction.update(targetUserRef, {
+                    followersCount: admin.firestore.FieldValue.increment(-1)
+                });
+
+                console.log(`User ${userId} successfully unfollowed ${targetUserId}.`);
+                return { message: 'User unfollowed successfully.' };
+            }
+        });
+
+        // The transaction itself handles the return value, so we return a generic success message here
+        return { success: true, message: `${actionType === 'followUser' ? 'Follow' : 'Unfollow'} action completed.` };
+
+    } catch (error) {
+        console.error(`Error in handleFollowUnfollow for ${userId} and ${targetUserId} (${actionType}):`, error);
+        // Rethrow an HTTPS error for the client
+        throwHttpsError('internal', 'Failed to update follow status.', error.message);
+    }
+}
+
+async function handleGetUserPosts(payload, userId) {
+    const {
+        profileUserId,
+        limit = 10,
+        lastPostId = null,
+        includePrivate = false
+    } = payload;
+
+    const targetId = profileUserId || userId;
+
+    if (!targetId || typeof targetId !== 'string') {
+        throwHttpsError('invalid-argument', 'A valid user ID is required to fetch posts.');
+    }
+    if (typeof limit !== 'number' || limit < 1 || limit > 50) {
+        throwHttpsError('invalid-argument', 'Limit must be a number between 1 and 50.');
+    }
+    if (lastPostId !== null && typeof lastPostId !== 'string') {
+        throwHttpsError('invalid-argument', 'lastPostId must be a string or null.');
+    }
+
+    try {
+        const userDoc = await db.collection(USERS_COLLECTION).doc(targetId).get();
+        if (!userDoc.exists) {
+            throwHttpsError('not-found', 'User not found.');
+        }
+
+        let postsQuery = db.collection(POSTS_COLLECTION)
+            .where('userId', '==', targetId)
+            .orderBy('createdAt', 'desc');
+
+        if (lastPostId) {
+            const lastPostSnapshot = await db.collection(POSTS_COLLECTION).doc(lastPostId).get();
+            if (lastPostSnapshot.exists) {
+                postsQuery = postsQuery.startAfter(lastPostSnapshot);
+            } else {
+                console.warn(`lastPostId ${lastPostId} not found, fetching from start.`);
+            }
+        }
+
+        const postsSnapshot = await postsQuery.limit(limit + 1).get();
+        const postDocs = postsSnapshot.docs.slice(0, limit);
+        const hasMore = postsSnapshot.docs.length > limit;
+
+        const posts = await Promise.all(postDocs.map(async (doc) => {
+            const postData = { id: doc.id, ...doc.data() };
+
+            try {
+                const likeDocRef = db.collection(POSTS_COLLECTION)
+                    .doc(doc.id)
+                    .collection('likes')
+                    .doc(userId); // Use requesting user's ID
+                const likeDoc = await likeDocRef.get();
+                postData.likedByCurrentUser = likeDoc.exists;
+
+                const bookmarkDocRef = db.collection(USERS_COLLECTION)
+                    .doc(userId) // Use requesting user's ID
+                    .collection('bookmarks')
+                    .doc(doc.id);
+                const bookmarkDoc = await bookmarkDocRef.get();
+                postData.bookmarkedByCurrentUser = bookmarkDoc.exists;
+
+                if (profileUserId && profileUserId !== userId && !includePrivate) {
+                    // Remove any sensitive fields if needed
+                    // For now, keeping all post data public
+                }
+
+            } catch (err) {
+                console.error(`Error checking like/bookmark for post ${doc.id}:`, err);
+                postData.likedByCurrentUser = false;
+                postData.bookmarkedByCurrentUser = false;
+            }
+
+            return postData;
+        }));
+
+        const lastVisibleDoc = postDocs.length > 0 ? postDocs[postDocs.length - 1] : null;
+
+        console.log(`Fetched ${posts.length} posts for user ${targetId} (requested by ${userId})`);
+
+        return {
+            posts,
+            count: posts.length,
+            hasMore,
+            lastDocId: lastVisibleDoc ? lastVisibleDoc.id : null,
+            userId: targetId,
+            message: 'User posts fetched successfully.'
+        };
+
+    } catch (error) {
+        console.error(`Error in handleGetUserPosts for ${targetId}:`, error);
+        if (error instanceof functions.https.HttpsError) {
+            throw error;
+        }
+        throwHttpsError('internal', 'Failed to fetch user posts.', error.message);
+    }
+}
 // async function handleUpdateProfile(payload, userId) {
 //     const { displayName, bio, profilePicUrl } = payload; // Only allow specific fields to be updated
 //
