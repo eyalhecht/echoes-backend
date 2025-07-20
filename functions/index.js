@@ -80,6 +80,8 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
                 return await handleGetProfile(payload, userId);
             case 'getUserPosts':
                 return await handleGetUserPosts(payload, userId);
+            case 'deletePost':
+                return await handleDeletePost(payload, userId);
         //     case 'updateProfile':
         //         return await handleUpdateProfile(payload, userId);
         //     // Add more actions as your app grows
@@ -1272,6 +1274,81 @@ async function handleGetUserPosts(payload, userId) {
             throw error;
         }
         throwHttpsError('internal', 'Failed to fetch user posts.', error.message);
+    }
+}
+
+async function handleDeletePost(payload, userId) {
+    const { postId } = payload;
+
+    if (!postId || typeof postId !== 'string') {
+        throwHttpsError('invalid-argument', 'A valid postId is required.');
+    }
+
+    const postRef = db.collection(POSTS_COLLECTION).doc(postId);
+    const userRef = db.collection(USERS_COLLECTION).doc(userId); // Define userRef here
+
+    try {
+        await db.runTransaction(async (transaction) => {
+            const postDoc = await transaction.get(postRef);
+
+            if (!postDoc.exists) {
+                throwHttpsError('not-found', 'Post not found.');
+            }
+
+            const postData = postDoc.data();
+
+            if (postData.userId !== userId) {
+                throwHttpsError('permission-denied', 'You do not have permission to delete this post.');
+            }
+
+            const userDoc = await transaction.get(userRef);
+            if (!userDoc.exists) {
+                throwHttpsError('internal', 'User profile not found for post owner.');
+            }
+            const currentPostsCount = userDoc.data().postsCount || 0;
+
+            // 1. Delete the post document itself
+            transaction.delete(postRef);
+
+            // 2. Delete all subcollections: Likes and Comments
+            // Note: For very large collections, consider a separate Cloud Function triggered by onDelete.
+            const likesSnapshot = await postRef.collection(LIKES_SUBCOLLECTION).get();
+            likesSnapshot.docs.forEach(doc => {
+                transaction.delete(doc.ref);
+            });
+
+            const commentsSnapshot = await postRef.collection(COMMENTS_SUBCOLLECTION).get();
+            commentsSnapshot.docs.forEach(doc => {
+                transaction.delete(doc.ref);
+            });
+
+            // // 3. Remove post from users' bookmarks via collection group query TODO
+            // // Requires a Firestore index on 'bookmarks' collectionGroup: { collectionGroup: 'bookmarks', fields: ['postId'], orderBy: 'asc' }
+            // const allBookmarksSnapshot = await db.collectionGroup(BOOKMARKS_SUBCOLLECTION)
+            //     .where('postId', '==', postId)
+            //     .get();
+            // allBookmarksSnapshot.docs.forEach(bookmarkDoc => {
+            //     transaction.delete(bookmarkDoc.ref);
+            // });
+
+            // 4. Decrement the user's `postsCount` ONLY if > 0
+            if (currentPostsCount > 0) {
+                transaction.update(userRef, {
+                    postsCount: admin.firestore.FieldValue.increment(-1)
+                });
+            }
+        });
+
+        console.log(`Post ${postId} and all related data deleted successfully by user ${userId}.`);
+        return { postId: postId, message: 'Post and all associated data deleted successfully!' };
+
+    } catch (error) {
+        console.error(`Error in handleDeletePost for post ${postId} by user ${userId}:`, error);
+        // Only re-throw HttpsErrors, convert others to generic internal error
+        if (error instanceof functions.https.HttpsError) {
+            throw error;
+        }
+        throwHttpsError('internal', 'Failed to delete post and its related data.', error.message);
     }
 }
 // async function handleUpdateProfile(payload, userId) {
