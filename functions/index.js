@@ -82,6 +82,10 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
                 return await handleGetUserPosts(payload, userId);
             case 'deletePost':
                 return await handleDeletePost(payload, userId);
+            case 'addComment':
+                return await handleAddComment(payload, userId);
+            case 'getComments':
+                return await handleGetComments(payload, userId);
             //     case 'updateProfile':
             //         return await handleUpdateProfile(payload, userId);
             //     // Add more actions as your app grows
@@ -1351,6 +1355,145 @@ async function handleDeletePost(payload, userId) {
             throw error;
         }
         throwHttpsError('internal', 'Failed to delete post and its related data.', error.message);
+    }
+}
+
+async function handleAddComment(payload, userId) {
+    const { postId, text } = payload;
+
+    // Input validation
+    if (!postId || typeof postId !== 'string') {
+        throwHttpsError('invalid-argument', 'A valid postId is required.');
+    }
+    if (!text || typeof text !== 'string' || text.trim().length === 0) {
+        throwHttpsError('invalid-argument', 'Comment text is required and must be a non-empty string.');
+    }
+    if (text.trim().length > 1000) { // Set reasonable character limit
+        throwHttpsError('invalid-argument', 'Comment text cannot exceed 1000 characters.');
+    }
+
+    const postRef = db.collection(POSTS_COLLECTION).doc(postId);
+    const commentsRef = postRef.collection(COMMENTS_SUBCOLLECTION);
+
+    try {
+        const result = await db.runTransaction(async (transaction) => {
+            // Check if post exists
+            const postDoc = await transaction.get(postRef);
+            if (!postDoc.exists) {
+                throwHttpsError('not-found', 'Post not found.');
+            }
+
+            // Get user data for the comment
+            const userDoc = await transaction.get(db.collection(USERS_COLLECTION).doc(userId));
+            const userData = userDoc.exists ? userDoc.data() : {};
+            const userDisplayName = userData.displayName || `User_${userId.substring(0, 8)}`;
+            const userProfilePicUrl = userData.profilePictureUrl || null;
+
+            // Create new comment
+            const newCommentRef = commentsRef.doc(); // Auto-generate comment ID
+            const commentData = {
+                userId: userId,
+                userDisplayName: userDisplayName,
+                userProfilePicUrl: userProfilePicUrl,
+                text: text.trim(),
+                createdAt: new Date(),
+            };
+
+            transaction.set(newCommentRef, commentData);
+
+            // Increment comment count on the post
+            const currentCommentsCount = postDoc.data().commentsCount || 0;
+            transaction.update(postRef, {
+                commentsCount: currentCommentsCount + 1,
+                updatedAt: new Date()
+            });
+
+            return {
+                commentId: newCommentRef.id,
+                commentData: commentData,
+                newCommentsCount: currentCommentsCount + 1
+            };
+        });
+
+        console.log(`User ${userId} added comment to post ${postId}: "${text.trim()}"`);
+        return {
+            commentId: result.commentId,
+            comment: result.commentData,
+            newCommentsCount: result.newCommentsCount,
+            message: 'Comment added successfully!'
+        };
+
+    } catch (error) {
+        console.error(`Error in handleAddComment for post ${postId} by user ${userId}:`, error);
+        if (error instanceof functions.https.HttpsError) {
+            throw error;
+        }
+        throwHttpsError('internal', 'Failed to add comment.', error.message);
+    }
+}
+
+async function handleGetComments(payload, userId) {
+    const { postId, limit = 200, lastCommentId = null } = payload;
+
+    // Input validation
+    if (!postId || typeof postId !== 'string') {
+        throwHttpsError('invalid-argument', 'A valid postId is required.');
+    }
+    if (typeof limit !== 'number' || limit < 1 || limit > 500) {
+        throwHttpsError('invalid-argument', 'Limit must be a number between 1 and 50.');
+    }
+    if (lastCommentId !== null && typeof lastCommentId !== 'string') {
+        throwHttpsError('invalid-argument', 'lastCommentId must be a string or null.');
+    }
+
+    try {
+        // Check if post exists
+        const postRef = db.collection(POSTS_COLLECTION).doc(postId);
+        const postDoc = await postRef.get();
+        if (!postDoc.exists) {
+            throwHttpsError('not-found', 'Post not found.');
+        }
+
+        let commentsQuery = postRef.collection(COMMENTS_SUBCOLLECTION)
+            .orderBy('createdAt', 'desc'); // Most recent comments first
+
+        // Handle pagination
+        if (lastCommentId) {
+            const lastCommentSnapshot = await postRef.collection(COMMENTS_SUBCOLLECTION).doc(lastCommentId).get();
+            if (lastCommentSnapshot.exists) {
+                commentsQuery = commentsQuery.startAfter(lastCommentSnapshot);
+            } else {
+                console.warn(`lastCommentId ${lastCommentId} not found, fetching from start.`);
+            }
+        }
+
+        const commentsSnapshot = await commentsQuery.limit(limit + 1).get();
+        const commentDocs = commentsSnapshot.docs.slice(0, limit);
+        const hasMore = commentsSnapshot.docs.length > limit;
+
+        const comments = commentDocs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+        }));
+
+        const lastVisibleDoc = commentDocs.length > 0 ? commentDocs[commentDocs.length - 1] : null;
+
+        console.log(`Fetched ${comments.length} comments for post ${postId}`);
+
+        return {
+            comments,
+            postId,
+            hasMore,
+            lastDocId: lastVisibleDoc ? lastVisibleDoc.id : null,
+            message: 'Comments fetched successfully.'
+        };
+
+    } catch (error) {
+        console.error(`Error in handleGetComments for post ${postId}:`, error);
+        if (error instanceof functions.https.HttpsError) {
+            throw error;
+        }
+        throwHttpsError('internal', 'Failed to fetch comments.', error.message);
     }
 }
 // async function handleUpdateProfile(payload, userId) {
