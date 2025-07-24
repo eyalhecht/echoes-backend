@@ -55,8 +55,8 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
     // Use a switch statement or object mapping to dispatch to specific handlers
     try {
         switch (action) {
-        //     case 'createPost':
-        //         return await handleCreatePost(payload, userId);
+            //     case 'createPost':
+            //         return await handleCreatePost(payload, userId);
             case 'followUser':
             case 'unfollowUser':
                 return handleFollowUnfollow(payload, userId, action);
@@ -70,21 +70,21 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
                 return await handleLikePost(payload, userId);
             case 'toggleBookmark':
                 return await handleToggleBookmark(payload, userId);
-        //     case 'likePost':
-        //         return await handleLikePost(payload, userId);
-        //     case 'addComment':
-        //         return await handleAddComment(payload, userId);
-        //     case 'followUser':
-        //         return await handleFollowUser(payload, userId);
+            //     case 'likePost':
+            //         return await handleLikePost(payload, userId);
+            //     case 'addComment':
+            //         return await handleAddComment(payload, userId);
+            //     case 'followUser':
+            //         return await handleFollowUser(payload, userId);
             case 'getProfile':
                 return await handleGetProfile(payload, userId);
             case 'getUserPosts':
                 return await handleGetUserPosts(payload, userId);
             case 'deletePost':
                 return await handleDeletePost(payload, userId);
-        //     case 'updateProfile':
-        //         return await handleUpdateProfile(payload, userId);
-        //     // Add more actions as your app grows
+            //     case 'updateProfile':
+            //         return await handleUpdateProfile(payload, userId);
+            //     // Add more actions as your app grows
             default:
                 throwHttpsError('not-found', `Action "${action}" not found.`);
         }
@@ -399,9 +399,6 @@ async function handleCreatePost(payload, userId) {
     }
 }
 
-const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-});
 
 // System prompt for consistent, professional analysis
 const SYSTEM_PROMPT = `You are an expert archivist and cultural heritage specialist with deep knowledge of:
@@ -510,7 +507,9 @@ export async function analyzePhoto(photoUrl, options = {}) {
     } else if (analysisDepth === 'comprehensive') {
         userPrompt += '\n\nProvide exhaustive analysis including all possible interpretations, detailed cultural context, and comprehensive controlled vocabulary terms.';
     }
-
+    const openai = new OpenAI({
+        apiKey: process.env.OPENAI_API_KEY,
+    });
     let attempt = 0;
     while (attempt < maxRetries) {
         try {
@@ -617,6 +616,9 @@ export async function quickAnalyzePhoto(photoUrl) {
   4. 5-10 relevant tags
   
   Return as JSON: { title, date, location, tags: [] }`;
+    const openai = new OpenAI({
+        apiKey: process.env.OPENAI_API_KEY,
+    });
 
     try {
         const response = await openai.chat.completions.create({
