@@ -490,76 +490,76 @@ Return a JSON object with the following structure:
 Ensure all classifications follow professional standards and use appropriate controlled vocabularies.`;
 
 
-export async function analyzePhoto(photoUrl, options = {}) {
-    const {
-        userContext = '',
-        analysisDepth = 'standard',
-        maxRetries = 3
-    } = options;
-
-    let userPrompt = USER_PROMPT;
-    if (userContext) {
-        userPrompt += `\n\nAdditional context: ${userContext}`;
-    }
-
-    if (analysisDepth === 'basic') {
-        userPrompt += '\n\nProvide essential metadata only (title, date, location, primary subjects, and key tags).';
-    } else if (analysisDepth === 'comprehensive') {
-        userPrompt += '\n\nProvide exhaustive analysis including all possible interpretations, detailed cultural context, and comprehensive controlled vocabulary terms.';
-    }
-    const openai = new OpenAI({
-        apiKey: process.env.OPENAI_API_KEY,
-    });
-    let attempt = 0;
-    while (attempt < maxRetries) {
-        try {
-            const response = await openai.chat.completions.create({
-                model: "gpt-4o",
-                messages: [
-                    {
-                        role: "system",
-                        content: SYSTEM_PROMPT
-                    },
-                    {
-                        role: "user",
-                        content: [
-                            {
-                                type: "text",
-                                text: userPrompt
-                            },
-                            {
-                                type: "image_url",
-                                image_url: {
-                                    url: photoUrl,
-                                    detail: analysisDepth === 'comprehensive' ? 'high' : 'auto'
-                                }
-                            }
-                        ]
-                    }
-                ],
-                temperature: 0.3, // Lower temperature for more consistent cataloging
-                max_tokens: analysisDepth === 'comprehensive' ? 4000 : 2000,
-                response_format: { type: "json_object" }
-            });
-
-            const result = JSON.parse(response.choices[0].message.content);
-
-            // Validate and clean the result
-            return validateAndCleanResult(result);
-
-        } catch (error) {
-            attempt++;
-            console.error(`Attempt ${attempt} failed:`, error);
-
-            if (attempt >= maxRetries) {
-                throw new Error(`Failed to analyze photo after ${maxRetries} attempts: ${error.message}`);
-            }
-
-            // Wait before retrying (exponential backoff)
-            await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
-        }
-    }
-}
+// export async function analyzePhoto(photoUrl, options = {}) {
+//     const {
+//         userContext = '',
+//         analysisDepth = 'standard',
+//         maxRetries = 3
+//     } = options;
+//
+//     let userPrompt = USER_PROMPT;
+//     if (userContext) {
+//         userPrompt += `\n\nAdditional context: ${userContext}`;
+//     }
+//
+//     if (analysisDepth === 'basic') {
+//         userPrompt += '\n\nProvide essential metadata only (title, date, location, primary subjects, and key tags).';
+//     } else if (analysisDepth === 'comprehensive') {
+//         userPrompt += '\n\nProvide exhaustive analysis including all possible interpretations, detailed cultural context, and comprehensive controlled vocabulary terms.';
+//     }
+//     const openai = new OpenAI({
+//         apiKey: process.env.OPENAI_API_KEY,
+//     });
+//     let attempt = 0;
+//     while (attempt < maxRetries) {
+//         try {
+//             const response = await openai.chat.completions.create({
+//                 model: "gpt-4o",
+//                 messages: [
+//                     {
+//                         role: "system",
+//                         content: SYSTEM_PROMPT
+//                     },
+//                     {
+//                         role: "user",
+//                         content: [
+//                             {
+//                                 type: "text",
+//                                 text: userPrompt
+//                             },
+//                             {
+//                                 type: "image_url",
+//                                 image_url: {
+//                                     url: photoUrl,
+//                                     detail: analysisDepth === 'comprehensive' ? 'high' : 'auto'
+//                                 }
+//                             }
+//                         ]
+//                     }
+//                 ],
+//                 temperature: 0.3, // Lower temperature for more consistent cataloging
+//                 max_tokens: analysisDepth === 'comprehensive' ? 4000 : 2000,
+//                 response_format: { type: "json_object" }
+//             });
+//
+//             const result = JSON.parse(response.choices[0].message.content);
+//
+//             // Validate and clean the result
+//             return validateAndCleanResult(result);
+//
+//         } catch (error) {
+//             attempt++;
+//             console.error(`Attempt ${attempt} failed:`, error);
+//
+//             if (attempt >= maxRetries) {
+//                 throw new Error(`Failed to analyze photo after ${maxRetries} attempts: ${error.message}`);
+//             }
+//
+//             // Wait before retrying (exponential backoff)
+//             await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+//         }
+//     }
+// }
 
 /**
  * Validates and cleans the API response
@@ -608,71 +608,71 @@ function validateAndCleanResult(result) {
 /**
  * Simplified analysis for quick tagging
  */
-export async function quickAnalyzePhoto(photoUrl) {
-    const quickPrompt = `Analyze this photo and provide:
-  1. A brief descriptive title
-  2. Estimated date/period
-  3. Location if identifiable
-  4. 5-10 relevant tags
-  
-  Return as JSON: { title, date, location, tags: [] }`;
-    const openai = new OpenAI({
-        apiKey: process.env.OPENAI_API_KEY,
-    });
-
-    try {
-        const response = await openai.chat.completions.create({
-            model: "gpt-4-vision-preview",
-            messages: [
-                {
-                    role: "user",
-                    content: [
-                        { type: "text", text: quickPrompt },
-                        { type: "image_url", image_url: { url: photoUrl } }
-                    ]
-                }
-            ],
-            temperature: 0.5,
-            max_tokens: 500,
-            response_format: { type: "json_object" }
-        });
-
-        return JSON.parse(response.choices[0].message.content);
-    } catch (error) {
-        console.error('Quick analysis failed:', error);
-        throw error;
-    }
-}
+// export async function quickAnalyzePhoto(photoUrl) {
+//     const quickPrompt = `Analyze this photo and provide:
+//   1. A brief descriptive title
+//   2. Estimated date/period
+//   3. Location if identifiable
+//   4. 5-10 relevant tags
+//
+//   Return as JSON: { title, date, location, tags: [] }`;
+//     const openai = new OpenAI({
+//         apiKey: process.env.OPENAI_API_KEY,
+//     });
+//
+//     try {
+//         const response = await openai.chat.completions.create({
+//             model: "gpt-4-vision-preview",
+//             messages: [
+//                 {
+//                     role: "user",
+//                     content: [
+//                         { type: "text", text: quickPrompt },
+//                         { type: "image_url", image_url: { url: photoUrl } }
+//                     ]
+//                 }
+//             ],
+//             temperature: 0.5,
+//             max_tokens: 500,
+//             response_format: { type: "json_object" }
+//         });
+//
+//         return JSON.parse(response.choices[0].message.content);
+//     } catch (error) {
+//         console.error('Quick analysis failed:', error);
+//         throw error;
+//     }
+// }
 
 /**
  * Batch analyze multiple photos
  */
-export async function batchAnalyzePhotos(photoUrls, options = {}) {
-    const results = [];
-    const { concurrency = 3 } = options;
-
-    // Process in chunks to avoid rate limits
-    for (let i = 0; i < photoUrls.length; i += concurrency) {
-        const chunk = photoUrls.slice(i, i + concurrency);
-        const chunkResults = await Promise.allSettled(
-            chunk.map(url => analyzePhoto(url, options))
-        );
-
-        results.push(...chunkResults.map((result, index) => ({
-            url: chunk[index],
-            success: result.status === 'fulfilled',
-            data: result.status === 'fulfilled' ? result.value : null,
-            error: result.status === 'rejected' ? result.reason.message : null
-        })));
-
-        // Rate limit pause between chunks
-        if (i + concurrency < photoUrls.length) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-    }
-
-    return results;
-}
+// export async function batchAnalyzePhotos(photoUrls, options = {}) {
+//     const results = [];
+//     const { concurrency = 3 } = options;
+//
+//     // Process in chunks to avoid rate limits
+//     for (let i = 0; i < photoUrls.length; i += concurrency) {
+//         const chunk = photoUrls.slice(i, i + concurrency);
+//         const chunkResults = await Promise.allSettled(
+//             chunk.map(url => analyzePhoto(url, options))
+//         );
+//
+//         results.push(...chunkResults.map((result, index) => ({
+//             url: chunk[index],
+//             success: result.status === 'fulfilled',
+//             data: result.status === 'fulfilled' ? result.value : null,
+//             error: result.status === 'rejected' ? result.reason.message : null
+//         })));
+//
+//         // Rate limit pause between chunks
+//         if (i + concurrency < photoUrls.length) {
+//             await new Promise(resolve => setTimeout(resolve, 1000));
+//         }
+//     }
+//
+//     return results;
+// }
 
 // Usage example:
 /*
