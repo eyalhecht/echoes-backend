@@ -16,43 +16,28 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          # IMPORTANT: Your log shows 'node: 22' required, but 'v20.19.4' current.
-          # Change this to '22' to match your functions' engine requirement.
           node-version: '22'
           cache: 'npm'
 
-      # This step creates a temporary file containing your Firebase Service Account Key.
-      # This file is crucial for the firebase-tools CLI to authenticate.
-      - name: Write Firebase Service Account Key to File
-        run: echo "${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}" > firebase-service-account-key.json
+      - name: Create Service Account Key File
+        run: echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}' > ${{ github.workspace }}/gcp-key.json
 
-      - name: Install Firebase CLI, Functions dependencies, and Deploy
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools
+
+      - name: Install Functions Dependencies
         run: |
-          # 1. Install Firebase CLI globally in the runner environment
-          npm install -g firebase-tools
-
-          # 2. Set the GOOGLE_APPLICATION_CREDENTIALS environment variable.
-          # This tells firebase-tools where to find the service account key for authentication.
-          # We use an absolute path from the GitHub Actions workspace root.
-          export GOOGLE_APPLICATION_CREDENTIALS="${{ github.workspace }}/firebase-service-account-key.json"
-
-          # 3. Navigate to your functions directory to install its dependencies and build
-          # IMPORTANT: Adjust './functions' if your functions directory is named differently or nested deeper.
-          cd functions 
-
-          # 4. Install dependencies for your Firebase Functions
+          cd functions
           npm install
+          # If using TypeScript, uncomment the next line:
+          # npm run build
+          cd ..
 
-          # 5. (Optional) Build your Functions (e.g., if you use TypeScript)
-          # Uncomment the line below if your functions have a build step (e.g., 'npm run build' for TypeScript)
-          # npm run build 
+      - name: Deploy Firebase Functions
+        run: firebase deploy --only functions --project echoes-677
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/gcp-key.json
 
-          # 6. Navigate back to the repository root.
-          # This is important if your firebase.json is in the root and points to the 'functions' directory.
-          # If your firebase.json is INSIDE your functions directory, you would REMOVE this 'cd ../'.
-          cd ../ 
-
-          # 7. Deploy ONLY your Firebase Functions for the specified project.
-          # The authentication is handled by GOOGLE_APPLICATION_CREDENTIALS.
-          # We add --debug for verbose output in case of issues.
-          firebase deploy --only functions --project echoes-677 --debug
+      - name: Clean up Service Account Key
+        if: always()
+        run: rm -f ${{ github.workspace }}/gcp-key.json
