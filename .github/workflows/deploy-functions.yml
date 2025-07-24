@@ -16,52 +16,17 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20' # IMPORTANT: Match your Firebase Functions' Node.js runtime (e.g., 18, 20, 22). This should match "runtime" in firebase.json.
+          node-version: '20'
           cache: 'npm'
 
-      # This step creates a temporary file containing your Firebase Service Account Key
-      # This file is used by the firebase-tools CLI for authentication.
-      - name: Write Firebase Service Account Key to File
-        run: echo "${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}" > firebase-service-account-key.json
+      - name: Install root dependencies (if any)
+        run: npm install
 
-      - name: Install Functions dependencies and Deploy
-        # We'll run npm install (for functions) and firebase deploy in one robust step.
-        # This ensures all commands run within the correct context and environment.
-        run: |
-          # 1. Install Firebase CLI globally in the runner environment
-          npm install -g firebase-tools
-
-          # 2. Navigate to your functions directory
-          # IMPORTANT: Adjust './functions' if your functions directory is named differently or nested deeper.
-          # For example, if your functions are in 'src/functions', use 'cd src/functions'
-          cd functions 
-
-          # 3. Install dependencies for your Firebase Functions
-          npm install
-
-          # 4. (Optional) Build your Functions (e.g., if you use TypeScript)
-          # Uncomment the line below if your functions have a build step (e.g., 'npm run build' for TypeScript)
-          # npm run build 
-
-          # 5. Navigate back to the repository root.
-          # This is important if your firebase.json is in the root and points to the 'functions' directory.
-          # If your firebase.json is INSIDE your functions directory, you would remove this 'cd ../'.
-          cd ../ 
-
-          # 6. Set the GOOGLE_APPLICATION_CREDENTIALS environment variable.
-          # This tells firebase-tools where to find the service account key for authentication.
-          # `$(pwd)` ensures we use the absolute path from the current working directory (which is the repo root here).
-          # The key file was created in the root: `firebase-service-account-key.json`.
-          export GOOGLE_APPLICATION_CREDENTIALS="$(pwd)/firebase-service-account-key.json"
-
-          # 7. Deploy ONLY your Firebase Functions for the specified project
-          firebase deploy --only functions --project echoes-677
-
-        # You can also set GOOGLE_APPLICATION_CREDENTIALS as an environment variable for the step
-        # which is cleaner than `export` in the run script if the script is simple.
-        # But for multi-line scripts that change directories, setting it within the script after `cd` can be necessary.
-        # For this setup, either method will work as we're explicitly setting it before `firebase deploy`.
-        env:
-          # This sets the env var for the entire 'Install Functions dependencies and Deploy' step
-          # pointing to the key file created at the workspace root.
-          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/firebase-service-account-key.json
+      - name: Deploy only Firebase Functions
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: '${{ secrets.GITHUB_TOKEN }}'
+          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}'
+          projectId: echoes-677
+          # this limits the deploy to functions only
+          target: functions
