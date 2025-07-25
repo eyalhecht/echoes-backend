@@ -86,6 +86,8 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
                 return await handleAddComment(payload, userId);
             case 'getComments':
                 return await handleGetComments(payload, userId);
+            case 'getPostsByLocation':
+                return await handleGetPostsByLocation(payload, userId);
             //     case 'updateProfile':
             //         return await handleUpdateProfile(payload, userId);
             //     // Add more actions as your app grows
@@ -1081,6 +1083,122 @@ async function handleGetProfile(payload, userId) {
     } catch (error) {
         console.error(`Error in handleGetProfile for ${targetId}:`, error);
         throwHttpsError('internal', 'Failed to fetch profile.', error.message);
+    }
+}
+
+async function handleGetPostsByLocation(payload, userId) {
+    const { center, radiusKm = 10, limit = 50 } = payload;
+
+    // Input validation
+    if (!center || typeof center.lat !== 'number' || typeof center.lng !== 'number') {
+        throwHttpsError('invalid-argument', 'Valid center coordinates (lat, lng) are required.');
+    }
+    if (typeof radiusKm !== 'number' || radiusKm < 0.1 || radiusKm > 100) {
+        throwHttpsError('invalid-argument', 'Radius must be between 0.1 and 100 kilometers.');
+    }
+    if (typeof limit !== 'number' || limit < 1 || limit > 100) {
+        throwHttpsError('invalid-argument', 'Limit must be between 1 and 100.');
+    }
+
+    try {
+        // Convert radius to approximate lat/lng bounds for initial filtering
+        // 1 degree latitude ≈ 111 km
+        const latDelta = radiusKm / 111;
+        const lngDelta = radiusKm / (111 * Math.cos(center.lat * Math.PI / 180));
+
+        const northEast = new GeoPoint(center.lat + latDelta, center.lng + lngDelta);
+        const southWest = new GeoPoint(center.lat - latDelta, center.lng - lngDelta);
+
+        // Query posts with location within approximate bounds
+        let postsQuery = db.collection(POSTS_COLLECTION)
+            .where('location', '>=', southWest)
+            .where('location', '<=', northEast)
+            .orderBy('location')
+            .orderBy('createdAt', 'desc')
+            .limit(limit * 2); // Get more than needed to filter by exact distance
+
+        const postsSnapshot = await postsQuery.get();
+
+        // Function to calculate distance between two points using Haversine formula
+        const calculateDistance = (lat1, lng1, lat2, lng2) => {
+            const R = 6371; // Earth's radius in kilometers
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLng = (lng2 - lng1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLng/2) * Math.sin(dLng/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        };
+
+        // Filter posts by exact distance and add user interaction data
+        const filteredPosts = await Promise.all(
+            postsSnapshot.docs
+                .map(doc => ({ id: doc.id, ...doc.data() }))
+                .filter(post => {
+                    if (!post.location || !post.location._latitude || !post.location._longitude) {
+                        return false;
+                    }
+                    const distance = calculateDistance(
+                        center.lat, center.lng,
+                        post.location._latitude, post.location._longitude
+                    );
+                    return distance <= radiusKm;
+                })
+                .slice(0, limit) // Final limit
+                .map(async (post) => {
+                    try {
+                        // Check if current user liked this post
+                        const likeDocRef = db.collection(POSTS_COLLECTION)
+                            .doc(post.id)
+                            .collection('likes')
+                            .doc(userId);
+                        const likeDoc = await likeDocRef.get();
+                        post.likedByCurrentUser = likeDoc.exists;
+
+                        // Check if current user bookmarked this post
+                        const bookmarkDocRef = db.collection(USERS_COLLECTION)
+                            .doc(userId)
+                            .collection('bookmarks')
+                            .doc(post.id);
+                        const bookmarkDoc = await bookmarkDocRef.get();
+                        post.bookmarkedByCurrentUser = bookmarkDoc.exists;
+
+                        // Add distance for sorting/display
+                        post.distanceKm = calculateDistance(
+                            center.lat, center.lng,
+                            post.location._latitude, post.location._longitude
+                        );
+
+                    } catch (err) {
+                        console.error(`Error checking interactions for post ${post.id}:`, err);
+                        post.likedByCurrentUser = false;
+                        post.bookmarkedByCurrentUser = false;
+                        post.distanceKm = 0;
+                    }
+                    return post;
+                })
+        );
+
+        // Sort by distance (closest first)
+        const sortedPosts = filteredPosts.sort((a, b) => a.distanceKm - b.distanceKm);
+
+        console.log(`Found ${sortedPosts.length} posts within ${radiusKm}km of lat:${center.lat}, lng:${center.lng}`);
+
+        return {
+            posts: sortedPosts,
+            center: center,
+            radiusKm: radiusKm,
+            count: sortedPosts.length,
+            message: 'Location-based posts fetched successfully.'
+        };
+
+    } catch (error) {
+        console.error(`Error in handleGetPostsByLocation:`, error);
+        if (error instanceof functions.https.HttpsError) {
+            throw error;
+        }
+        throwHttpsError('internal', 'Failed to fetch posts by location.', error.message);
     }
 }
 
