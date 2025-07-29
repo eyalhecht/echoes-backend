@@ -88,6 +88,8 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
                 return await handleGetComments(payload, userId);
             case 'getPostsByLocation':
                 return await handleGetPostsByLocation(payload, userId);
+            case 'getSuggestedUsers':
+                return await handleGetSuggestedUsers(payload, userId);
             //     case 'updateProfile':
             //         return await handleUpdateProfile(payload, userId);
             //     // Add more actions as your app grows
@@ -1609,6 +1611,108 @@ async function handleGetComments(payload, userId) {
         throwHttpsError('internal', 'Failed to fetch comments.', error.message);
     }
 }
+
+async function handleGetSuggestedUsers(payload, userId) {
+    const { limit = 5 } = payload;
+
+    // Basic validation
+    if (typeof limit !== 'number' || limit < 1 || limit > 20) {
+        throwHttpsError('invalid-argument', 'Limit must be a number between 1 and 20.');
+    }
+
+    try {
+        // Calculate date 30 days ago
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        // Get users that the current user is already following
+        const currentUserRef = db.collection(USERS_COLLECTION).doc(userId);
+        const followingSnapshot = await currentUserRef.collection('following').get();
+        const followingIds = followingSnapshot.docs.map(doc => doc.id);
+        followingIds.push(userId); // Also exclude self
+
+        // Get posts from the last 30 days
+        const recentPostsSnapshot = await db.collection(POSTS_COLLECTION)
+            .where('createdAt', '>=', thirtyDaysAgo)
+            .get();
+
+        // Count posts per user in the last 30 days
+        const userPostCounts = {};
+        recentPostsSnapshot.docs.forEach(doc => {
+            const postData = doc.data();
+            const postUserId = postData.userId;
+            
+            // Skip if user is already followed or is current user
+            if (followingIds.includes(postUserId)) {
+                return;
+            }
+
+            if (!userPostCounts[postUserId]) {
+                userPostCounts[postUserId] = {
+                    count: 0,
+                    userDisplayName: postData.userDisplayName,
+                    userProfilePicUrl: postData.userProfilePicUrl
+                };
+            }
+            userPostCounts[postUserId].count++;
+        });
+
+        // Convert to array and sort by post count (most active first)
+        const activeUsers = Object.entries(userPostCounts)
+            .map(([userId, data]) => ({
+                userId,
+                postCount: data.count,
+                userDisplayName: data.userDisplayName,
+                userProfilePicUrl: data.userProfilePicUrl
+            }))
+            .sort((a, b) => b.postCount - a.postCount)
+            .slice(0, limit);
+
+        // Get additional user data for the most active users
+        const suggestedUsers = await Promise.all(
+            activeUsers.map(async (user) => {
+                try {
+                    const userDoc = await db.collection(USERS_COLLECTION).doc(user.userId).get();
+                    if (userDoc.exists) {
+                        const userData = userDoc.data();
+                        return {
+                            userId: user.userId,
+                            displayName: userData.displayName || user.userDisplayName,
+                            profilePictureUrl: userData.profilePictureUrl || user.userProfilePicUrl,
+                            followersCount: userData.followersCount || 0,
+                            postsCount: userData.postsCount || 0,
+                            recentPostsCount: user.postCount,
+                            reason: `${user.postCount} recent posts`
+                        };
+                    }
+                    return null;
+                } catch (err) {
+                    console.error(`Error fetching user data for ${user.userId}:`, err);
+                    return null;
+                }
+            })
+        );
+
+        // Filter out null results
+        const validSuggestions = suggestedUsers.filter(user => user !== null);
+
+        console.log(`Found ${validSuggestions.length} suggested users for user ${userId}`);
+
+        return {
+            suggestedUsers: validSuggestions,
+            count: validSuggestions.length,
+            message: 'Suggested users fetched successfully.'
+        };
+
+    } catch (error) {
+        console.error('Error in handleGetSuggestedUsers:', error);
+        if (error instanceof functions.https.HttpsError) {
+            throw error;
+        }
+        throwHttpsError('internal', 'Failed to fetch suggested users.', error.message);
+    }
+}
+
 // async function handleUpdateProfile(payload, userId) {
 //     const { displayName, bio, profilePicUrl } = payload; // Only allow specific fields to be updated
 //
