@@ -159,9 +159,8 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
 // const POSTS_COLLECTION = 'posts';
 
 async function handleGetFeed(payload, userId) {
-    // `payload` might contain parameters like `lastPostId`, `limit`, `filterByTag`
-    const { limit = 10, lastPostId = null } = payload; // Changed default limit to 10 to match frontend
-    const POST_LIMIT = limit; // Use the provided limit from payload
+    const { limit = 10, lastPostId = null } = payload;
+    const POST_LIMIT = limit;
 
     // Basic validation
     if (typeof limit !== 'number' || limit < 1 || limit > 100) {
@@ -175,32 +174,35 @@ async function handleGetFeed(payload, userId) {
         let postsQuery = db.collection(POSTS_COLLECTION)
             .orderBy('createdAt', 'desc');
 
-        let hasMore = true; // Assume there might be more posts by default
-
         if (lastPostId) {
             const lastPostSnapshot = await db.collection(POSTS_COLLECTION).doc(lastPostId).get();
             if (lastPostSnapshot.exists) {
                 postsQuery = postsQuery.startAfter(lastPostSnapshot);
             } else {
-                // If lastPostId is invalid or not found, treat it as an initial load
                 console.warn(`lastPostId ${lastPostId} not found, fetching from start.`);
-                // We don't need to re-query here, the original postsQuery is already set up for initial load
             }
         }
 
-        const postsSnapshot = await postsQuery.limit(POST_LIMIT + 1).get(); // Fetch one extra document to check for 'hasMore'
+        // Fetch one extra document to check for 'hasMore'
+        const postsSnapshot = await postsQuery.limit(POST_LIMIT + 1).get();
 
-        const postDocs = postsSnapshot.docs.slice(0, POST_LIMIT); // Limit to the requested number of posts
+        // Check if there are more posts by comparing the actual fetched count
+        const hasMore = postsSnapshot.docs.length > POST_LIMIT;
+
+        // Only take the requested number of posts (exclude the extra one)
+        const postDocs = postsSnapshot.docs.slice(0, POST_LIMIT);
 
         const fetchedPosts = await Promise.all(postDocs.map(async (doc) => {
             const postData = { id: doc.id, ...doc.data() };
             try {
+                // Check if post is liked by current user
                 const likeDocRef = db.collection(POSTS_COLLECTION)
                     .doc(doc.id)
                     .collection('likes')
                     .doc(userId);
                 const likeDoc = await likeDocRef.get();
                 postData.likedByCurrentUser = likeDoc.exists;
+
                 // Check if post is bookmarked by current user
                 const bookmarkDocRef = db.collection(USERS_COLLECTION)
                     .doc(userId)
@@ -210,35 +212,28 @@ async function handleGetFeed(payload, userId) {
                 postData.bookmarkedByCurrentUser = bookmarkDoc.exists;
             } catch (err) {
                 console.error(`Error checking like/bookmark for post ${doc.id}`, err);
-                postData.likedByCurrentUser = false; // fallback
-                postData.bookmarkedByCurrentUser = false; // fallback
+                postData.likedByCurrentUser = false;
+                postData.bookmarkedByCurrentUser = false;
             }
             return postData;
         }));
 
-        if (fetchedPosts.length <= POST_LIMIT) {
-            hasMore = false; // No more posts if we didn't get more than the limit
-        }
+        // Get the last document ID for pagination
+        const lastVisibleDoc = postDocs.length > 0 ? postDocs[postDocs.length - 1] : null;
 
-        const postsToReturn = fetchedPosts.slice(0, POST_LIMIT);
-        const lastVisibleDoc = postsSnapshot.docs[postsToReturn.length - 1]; // Get the last document from the returned slice
-
-        console.log(`Fetched ${postsToReturn.length} posts for user ${userId}`);
+        console.log(`Fetched ${fetchedPosts.length} posts for user ${userId}, hasMore: ${hasMore}`);
 
         return {
-            posts: postsToReturn,
-            lastDocId: lastVisibleDoc ? lastVisibleDoc.id : null, // Pass back the ID of the last document for next pagination
-            hasMore: hasMore, // Indicate if there are more posts to fetch
+            posts: fetchedPosts,
+            lastDocId: lastVisibleDoc ? lastVisibleDoc.id : null,
+            hasMore: hasMore,
             message: 'Feed fetched successfully.',
         };
     } catch (error) {
         console.error('Error in handleGetFeed:', error);
-        // Ensure you have a throwHttpsError function defined for Callable Cloud Functions
-        // or handle errors as appropriate for your BE environment.
         throwHttpsError('internal', 'Failed to fetch feed.', error.message);
     }
 }
-
 async function handleCreatePost(payload, userId) {
     const { description, type, fileUrls = [], location = null, year = [] } = payload;
 
