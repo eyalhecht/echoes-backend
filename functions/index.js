@@ -1111,7 +1111,6 @@ async function handleGetPostsByLocation(payload, userId) {
             .where('location', '>=', southWest)
             .where('location', '<=', northEast)
             .orderBy('location')
-            .orderBy('createdAt', 'desc')
             .limit(limit * 2); // Get more than needed to filter by exact distance
 
         const postsSnapshot = await postsQuery.get();
