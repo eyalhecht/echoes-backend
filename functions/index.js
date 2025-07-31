@@ -412,13 +412,15 @@ const SYSTEM_PROMPT = `You are an expert photo analyst specializing in historica
 - Getty Vocabulary Program (AAT, TGN) for standardized terms
 - Library of Congress Subject Headings (LCSH)
 - Professional archival cataloging practices
+- Historical figures, celebrities, and notable people
 
 Your task is to analyze photographs and provide metadata that balances academic rigor with accessibility. Always:
 1. Use controlled vocabularies and standardized terms when available
 2. Provide multiple levels of geographic specificity
 3. Include cultural and historical context
 4. Generate comprehensive tags for high-quality search functionality
-5. Use consistent terminology (e.g., "Berlin" not "berlin", "New York City" not "NYC")`;
+5. Use consistent terminology (e.g., "Berlin" not "berlin", "New York City" not "NYC")
+6. Identify notable people when clearly visible, including historical figures, celebrities, and public personalities`;
 
 // User prompt template
 const USER_PROMPT = `Analyze this photograph and provide comprehensive metadata for search and cataloging purposes.
@@ -433,6 +435,7 @@ Return a JSON object with this exact structure:
   "location_confidence": "definite|probable|possible|unknown", 
   "cultural_context": "Brief cultural or social context",
   "historical_period": "Historical period or era",
+  "people_identified": ["Array of specific people if clearly identifiable with confidence levels"],
   "geographic_terms": ["Array of locations with TGN IDs when available, from specific to general"],
   "subject_terms": ["Array of subject classifications with AAT IDs when available"],
   "tags": ["Array of ~20 searchable tags covering objects, people, activities, time, place, style, mood, etc."]
@@ -444,6 +447,9 @@ Guidelines:
 - Use professional subject terms (Getty AAT preferred) 
 - Generate ~20 tags for optimal search coverage
 - Tags should include: specific objects/brands, general subjects, activities, time period, locations, style/mood
+- **People identification**: If you can clearly identify specific historical figures, celebrities, politicians, or notable people, include them in both people_identified field and tags
+- Use format like "Nelson Mandela (definite)" or "Elvis Presley (probable)" for people_identified
+- Include identified people's names directly in tags (e.g., "Nelson Mandela", "John F. Kennedy")
 - Use consistent capitalization and spelling`;
 
 
@@ -504,6 +510,7 @@ function validateAndCleanResult(result) {
         location_confidence: result.location_confidence || 'unknown',
         cultural_context: result.cultural_context || '',
         historical_period: result.historical_period || '',
+        people_identified: Array.isArray(result.people_identified) ? result.people_identified : [],
         geographic_terms: Array.isArray(result.geographic_terms) ? result.geographic_terms : [],
         subject_terms: Array.isArray(result.subject_terms) ? result.subject_terms : [],
         tags: Array.isArray(result.tags) ? result.tags : []
