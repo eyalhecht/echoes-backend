@@ -365,7 +365,7 @@ async function handleCreatePost(payload, userId) {
         if (type === 'photo' || type === 'document' || type === 'item') {
             try {
                 AiMetadata = await analyzePhoto(fileUrls[0]);
-                console.log('Photo analyzed successfully:', AiMetadata?.title || 'No title');
+                console.log('Photo analyzed successfully:', AiMetadata || 'No title');
             } catch (error) {
                 console.warn('Photo analysis failed:', error.message);
                 // Continue with post creation even if AI analysis fails
@@ -408,93 +408,43 @@ async function handleCreatePost(payload, userId) {
 
 
 // System prompt for consistent, professional analysis
-const SYSTEM_PROMPT = `You are an expert archivist and cultural heritage specialist with deep knowledge of:
-- Dublin Core, VRA Core, and CCO (Cataloging Cultural Objects) standards
-- Getty Vocabulary Program (AAT, TGN, ULAN, CONA)
+const SYSTEM_PROMPT = `You are an expert photo analyst specializing in historical and cultural documentation. You have knowledge of:
+- Getty Vocabulary Program (AAT, TGN) for standardized terms
 - Library of Congress Subject Headings (LCSH)
-- International archival and museum cataloging practices
+- Professional archival cataloging practices
 
-Your task is to analyze photographs and provide scholarly, precise metadata following established archival standards. Always:
-1. Use controlled vocabularies when available
-2. Provide context and cultural significance
-3. Follow professional cataloging protocols
-4. Be academically rigorous yet accessible
-5. Consider multiple perspectives and interpretations`;
+Your task is to analyze photographs and provide metadata that balances academic rigor with accessibility. Always:
+1. Use controlled vocabularies and standardized terms when available
+2. Provide multiple levels of geographic specificity
+3. Include cultural and historical context
+4. Generate comprehensive tags for high-quality search functionality
+5. Use consistent terminology (e.g., "Berlin" not "berlin", "New York City" not "NYC")`;
 
 // User prompt template
-const USER_PROMPT = `Please analyze this photograph and provide comprehensive archival metadata following international cataloging standards.
+const USER_PROMPT = `Analyze this photograph and provide comprehensive metadata for search and cataloging purposes.
 
-Return a JSON object with the following structure:
+Return a JSON object with this exact structure:
 
 {
-  "title": "Descriptive title following CCO guidelines",
-  "creator": {
-    "name": "Photographer/creator name if identifiable",
-    "role": "photographer|artist|unknown",
-    "certainty": "definite|probable|possible|unknown"
-  },
-  "date": {
-    "display": "Human-readable date (e.g., 'circa 1920s', 'May 15, 1965')",
-    "earliest": "YYYY-MM-DD",
-    "latest": "YYYY-MM-DD",
-    "certainty": "definite|probable|approximate"
-  },
-  "medium": {
-    "type": "Specific photographic technique",
-    "format": "Physical format if determinable",
-    "process": "Technical process used"
-  },
-  "subject": {
-    "primary": ["Main subjects using AAT/LCSH terms"],
-    "secondary": ["Additional subjects"],
-    "depicted": ["Specific people, places, or things shown"],
-    "conceptual": ["Abstract concepts or themes"]
-  },
-  "location": {
-    "depicted": {
-      "display": "Human-readable location",
-      "city": "City name",
-      "region": "State/Province",
-      "country": "Country",
-      "coordinates": {"lat": null, "lng": null},
-      "tgn_id": "Getty TGN ID if applicable"
-    },
-    "created": "Where photo was taken if different from depicted"
-  },
-  "event": {
-    "name": "Specific event if identifiable",
-    "type": "Event category",
-    "date": "Event date if different from photo date",
-    "significance": "Historical importance"
-  },
-  "style": {
-    "period": "Historical/artistic period",
-    "movement": "Artistic movement if applicable",
-    "technique": "Photographic technique or approach"
-  },
-  "cultural_significance": {
-    "historical": "Historical context and importance",
-    "cultural": "Cultural meaning and impact",
-    "artistic": "Artistic significance",
-    "social": "Social context and implications"
-  },
-  "physical_description": {
-    "composition": "Description of visual composition",
-    "condition": "Apparent condition if assessable",
-    "inscriptions": "Any visible text or markings",
-  },
-  "related_works": "Similar or related photographs/artworks",
-  "tags": {
-    "subject": ["Subject-based tags"],
-    "temporal": ["Time-period tags"],
-    "geographic": ["Location-based tags"],
-    "stylistic": ["Style/technique tags"],
-    "cultural": ["Cultural/social tags"]
-  },
-  "cataloging_notes": "Additional scholarly notes for archivists"
+  "description": "Clear description of what's happening in the image",
+  "date_estimate": "Time period estimate (e.g., '1960s', '1980s', 'early 2000s')",
+  "date_confidence": "definite|probable|possible|unknown",
+  "location": "Most specific to general location (e.g., 'Times Square, New York City, United States')",
+  "location_confidence": "definite|probable|possible|unknown", 
+  "cultural_context": "Brief cultural or social context",
+  "historical_period": "Historical period or era",
+  "geographic_terms": ["Array of locations with TGN IDs when available, from specific to general"],
+  "subject_terms": ["Array of subject classifications with AAT IDs when available"],
+  "tags": ["Array of ~20 searchable tags covering objects, people, activities, time, place, style, mood, etc."]
 }
 
-Ensure all classifications follow professional standards and use appropriate controlled vocabularies.`;
+Guidelines:
+- Use standardized geographic names (Getty TGN preferred)
+- Include all location levels in both location field and tags
+- Use professional subject terms (Getty AAT preferred) 
+- Generate ~20 tags for optimal search coverage
+- Tags should include: specific objects/brands, general subjects, activities, time period, locations, style/mood
+- Use consistent capitalization and spelling`;
 
 
 export async function analyzePhoto(photoUrl) {
@@ -545,43 +495,19 @@ export async function analyzePhoto(photoUrl) {
  * Validates and cleans the API response
  */
 function validateAndCleanResult(result) {
-    // Ensure required fields exist
+    // Return the new simplified structure
     const cleaned = {
-        title: result.title || 'Untitled Photograph',
-        creator: {
-            name: result.creator?.name || 'Unknown',
-            role: result.creator?.role || 'unknown',
-            certainty: result.creator?.certainty || 'unknown'
-        },
-        date: {
-            display: result.date?.display || 'Date unknown',
-            earliest: result.date?.earliest || null,
-            latest: result.date?.latest || null,
-            certainty: result.date?.certainty || 'unknown'
-        },
-        medium: result.medium || { type: 'Photograph', format: 'Unknown', process: 'Unknown' },
-        subject: {
-            primary: Array.isArray(result.subject?.primary) ? result.subject.primary : [],
-            secondary: Array.isArray(result.subject?.secondary) ? result.subject.secondary : [],
-            depicted: Array.isArray(result.subject?.depicted) ? result.subject.depicted : [],
-            conceptual: Array.isArray(result.subject?.conceptual) ? result.subject.conceptual : []
-        },
-        location: result.location || {},
-        event: result.event || null,
-        style: result.style || {},
-        cultural_significance: result.cultural_significance || {},
-        physical_description: result.physical_description || {},
-        related_works: result.related_works || null,
-        tags: {
-            subject: Array.isArray(result.tags?.subject) ? result.tags.subject : [],
-            temporal: Array.isArray(result.tags?.temporal) ? result.tags.temporal : [],
-            geographic: Array.isArray(result.tags?.geographic) ? result.tags.geographic : [],
-            stylistic: Array.isArray(result.tags?.stylistic) ? result.tags.stylistic : [],
-            cultural: Array.isArray(result.tags?.cultural) ? result.tags.cultural : []
-        },
-        cataloging_notes: result.cataloging_notes || ''
+        description: result.description || 'Photograph',
+        date_estimate: result.date_estimate || 'Unknown period',
+        date_confidence: result.date_confidence || 'unknown',
+        location: result.location || 'Unknown location',
+        location_confidence: result.location_confidence || 'unknown',
+        cultural_context: result.cultural_context || '',
+        historical_period: result.historical_period || '',
+        geographic_terms: Array.isArray(result.geographic_terms) ? result.geographic_terms : [],
+        subject_terms: Array.isArray(result.subject_terms) ? result.subject_terms : [],
+        tags: Array.isArray(result.tags) ? result.tags : []
     };
-
     return cleaned;
 }
 
