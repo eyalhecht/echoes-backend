@@ -302,8 +302,12 @@ async function handleCreatePost(payload, userId) {
     }
 
     try {
-        // --- 2. Fetch User Data (for displayName, profilePicUrl etc.) ---
-        const userDoc = await db.collection(USERS_COLLECTION).doc(userId).get();
+    // --- 2. Use Transaction to ensure data consistency ---
+    const result = await db.runTransaction(async (transaction) => {
+        // Fetch User Data (for displayName, profilePicUrl etc.)
+        const userRef = db.collection(USERS_COLLECTION).doc(userId);
+        const userDoc = await transaction.get(userRef);
+
         if (!userDoc.exists) {
             throwHttpsError('not-found', 'User profile not found. Cannot create post.');
         }
@@ -311,56 +315,7 @@ async function handleCreatePost(payload, userId) {
         const userDisplayName = userData.displayName || userDoc.id; // Fallback to UID
         const userProfilePicUrl = userData.profilePictureUrl || null; // Get user's profile picture
 
-        // let imageLabels = [];
-        // let safeSearchLikelihood = null;
-        // if (type === 'photo') { // Assuming video thumbnails or frames can be analyzed
-        //     const imageUrlToAnalyze = fileUrls[0];
-        //     if (imageUrlToAnalyze) {
-        //         try {
-        //             const [result] = await client.annotateImage({
-        //                 image: { source: { imageUri: imageUrlToAnalyze } },
-        //                 features: [
-        //                     { type: 'LABEL_DETECTION' }, // Detect broad labels (e.g., "car", "nature")
-        //                     { type: 'SAFE_SEARCH_DETECTION' }, // Detect explicit content
-        //                     // { type: 'WEB_DETECTION' }, // Find web entities related to the image
-        //                     // { type: 'TEXT_DETECTION' }, // Detect text in the image (OCR)
-        //                     { type: 'FACE_DETECTION' }, // Detect faces
-        //                     { type: 'LANDMARK_DETECTION' }, // Detect famous landmarks
-        //                 ],
-        //             });
-        //             console.log("reesultsfaceAnnotations:", JSON.stringify(result, null, 2))
-        //
-        //             // Extract labels
-        //             if (result.labelAnnotations) {
-        //                 imageLabels = result.labelAnnotations
-        //                     .filter(label => label.score > 0.4) // Filter for higher confidence scores
-        //                     .map(label => label.description);
-        //             }
-        //
-        //             // Extract Safe Search results
-        //             if (result.safeSearchAnnotation) {
-        //                 safeSearchLikelihood = {
-        //                     adult: result.safeSearchAnnotation.adult,
-        //                     spoof: result.safeSearchAnnotation.spoof,
-        //                     medical: result.safeSearchAnnotation.medical,
-        //                     violence: result.safeSearchAnnotation.violence,
-        //                     racy: result.safeSearchAnnotation.racy,
-        //                 };
-        //             }
-        //
-        //         } catch (visionError) {
-        //             console.warn(`Cloud Vision API error for URL ${imageUrlToAnalyze}:`, visionError);
-        //             // Decide how to handle Vision errors:
-        //             // - You could throw an HttpsError to stop post creation if Vision is critical.
-        //             // - Or, you can just log it and proceed without image info, as shown here.
-        //         }
-        //     }
-        // }
-
-
-        // --- 3. Create New Post Document in Firestore ---
-        const newPostRef = db.collection(POSTS_COLLECTION).doc(); // Auto-generate ID
-
+        // AI Metadata generation (if applicable)
         let AiMetadata = null;
         if (type === 'photo' || type === 'document' || type === 'item') {
             try {
@@ -371,6 +326,9 @@ async function handleCreatePost(payload, userId) {
                 // Continue with post creation even if AI analysis fails
             }
         }
+
+            // Create New Post Document in Firestore
+            const newPostRef = db.collection(POSTS_COLLECTION).doc(); // Auto-generate ID
 
         const postData = {
             userId: userId,
@@ -392,10 +350,21 @@ async function handleCreatePost(payload, userId) {
             // safeSearch: safeSearchLikelihood,
         };
 
-        await newPostRef.set(postData);
+            // Create the post
+            transaction.set(newPostRef, postData);
 
-        console.log(`Post ${newPostRef.id} (${type}) created by ${userId}`);
-        return { postId: newPostRef.id, message: 'Post created successfully!' };
+            // *** FIX: Increment user's postsCount ***
+            const currentPostsCount = userData.postsCount || 0;
+            transaction.update(userRef, {
+                postsCount: currentPostsCount + 1,
+                updatedAt: new Date()
+            });
+
+            return { postId: newPostRef.id };
+        });
+
+        console.log(`Post ${result.postId} (${type}) created by ${userId} and postsCount incremented`);
+        return { postId: result.postId, message: 'Post created successfully!' };
 
     } catch (error) {
         console.error('Error in handleCreatePost:', error);
