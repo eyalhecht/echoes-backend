@@ -90,6 +90,10 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
                 return await handleGetPostsByLocation(payload, userId);
             case 'getSuggestedUsers':
                 return await handleGetSuggestedUsers(payload, userId);
+            case 'getFollowersList':
+            case 'getFollowingList':
+                return await handleGetFollowersFollowing(payload, userId, action);
+
             //     case 'updateProfile':
             //         return await handleUpdateProfile(payload, userId);
             //     // Add more actions as your app grows
@@ -873,6 +877,117 @@ async function handleGetProfile(payload, userId) {
     } catch (error) {
         console.error(`Error in handleGetProfile for ${targetId}:`, error);
         throwHttpsError('internal', 'Failed to fetch profile.', error.message);
+    }
+}
+
+async function handleGetFollowersFollowing(payload, userId, actionType) {
+    const { profileUserId, limit = 50, lastUserId = null } = payload;
+
+    // Basic validation
+    if (!profileUserId || typeof profileUserId !== 'string') {
+        throwHttpsError('invalid-argument', 'A valid profileUserId is required.');
+    }
+    if (typeof limit !== 'number' || limit < 1 || limit > 100) {
+        throwHttpsError('invalid-argument', 'Limit must be a number between 1 and 100.');
+    }
+    if (lastUserId !== null && typeof lastUserId !== 'string') {
+        throwHttpsError('invalid-argument', 'lastUserId must be a string or null.');
+    }
+
+    // IMPORTANT: Privacy validation - users can only see their own lists
+    if (profileUserId !== userId) {
+        throwHttpsError('permission-denied', 'You can only view your own followers/following lists.');
+    }
+
+    try {
+        // Check if user exists
+        const userDoc = await db.collection(USERS_COLLECTION).doc(profileUserId).get();
+        if (!userDoc.exists) {
+            throwHttpsError('not-found', 'User not found.');
+        }
+
+        const collectionName = actionType === 'getFollowersList' ? 'followers' : 'following';
+
+        let query = db.collection(USERS_COLLECTION)
+            .doc(profileUserId)
+            .collection(collectionName)
+            .orderBy('createdAt', 'desc');
+
+        // Handle pagination
+        if (lastUserId) {
+            const lastUserSnapshot = await db.collection(USERS_COLLECTION)
+                .doc(profileUserId)
+                .collection(collectionName)
+                .doc(lastUserId)
+                .get();
+
+            if (lastUserSnapshot.exists) {
+                query = query.startAfter(lastUserSnapshot);
+            } else {
+                console.warn(`lastUserId ${lastUserId} not found, fetching from start.`);
+            }
+        }
+
+        const snapshot = await query.limit(limit + 1).get();
+        const hasMore = snapshot.docs.length > limit;
+        const userDocs = snapshot.docs.slice(0, limit);
+
+        // Get full user data for each follower/following
+        const users = await Promise.all(
+            userDocs.map(async (doc) => {
+                const relationshipData = doc.data();
+                const targetUserId = doc.id;
+
+                try {
+                    // Get the full user profile data
+                    const targetUserDoc = await db.collection(USERS_COLLECTION).doc(targetUserId).get();
+
+                    if (targetUserDoc.exists) {
+                        const userData = targetUserDoc.data();
+                        return {
+                            userId: targetUserId,
+                            displayName: userData.displayName,
+                            profilePictureUrl: userData.profilePictureUrl,
+                            bio: userData.bio || '',
+                            followersCount: userData.followersCount || 0,
+                            followingCount: userData.followingCount || 0,
+                            postsCount: userData.postsCount || 0,
+                            createdAt: relationshipData.createdAt,
+                            // Check if current user is following this user (for follow/unfollow button)
+                            isFollowedByCurrentUser: actionType === 'getFollowersList' ?
+                                false : // Don't need this for followers list since it's obvious
+                                true   // Don't need this for following list since it's obvious
+                        };
+                    }
+                    return null;
+                } catch (err) {
+                    console.error(`Error fetching user data for ${targetUserId}:`, err);
+                    return null;
+                }
+            })
+        );
+
+        // Filter out null results
+        const validUsers = users.filter(user => user !== null);
+        const lastVisibleDoc = userDocs.length > 0 ? userDocs[userDocs.length - 1] : null;
+
+        console.log(`Fetched ${validUsers.length} ${collectionName} for user ${profileUserId}`);
+
+        return {
+            users: validUsers,
+            count: validUsers.length,
+            hasMore: hasMore,
+            lastUserId: lastVisibleDoc ? lastVisibleDoc.id : null,
+            listType: actionType === 'getFollowersList' ? 'followers' : 'following',
+            message: `${actionType === 'getFollowersList' ? 'Followers' : 'Following'} list fetched successfully.`
+        };
+
+    } catch (error) {
+        console.error(`Error in handleGetFollowersFollowing for ${profileUserId} (${actionType}):`, error);
+        if (error instanceof functions.https.HttpsError) {
+            throw error;
+        }
+        throwHttpsError('internal', `Failed to fetch ${actionType === 'getFollowersList' ? 'followers' : 'following'} list.`, error.message);
     }
 }
 
