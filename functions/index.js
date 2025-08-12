@@ -93,6 +93,8 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
             case 'getFollowersList':
             case 'getFollowingList':
                 return await handleGetFollowersFollowing(payload, userId, action);
+            case 'searchUsers':
+                return await handleSearchUsers(payload, userId);
 
             //     case 'updateProfile':
             //         return await handleUpdateProfile(payload, userId);
@@ -1617,6 +1619,92 @@ async function handleGetSuggestedUsers(payload, userId) {
             throw error;
         }
         throwHttpsError('internal', 'Failed to fetch suggested users.', error.message);
+    }
+}
+
+async function handleSearchUsers(payload, userId) {
+    const { query, limit = 10 } = payload;
+
+    // Input validation
+    if (!query || typeof query !== 'string' || query.trim().length === 0) {
+        throwHttpsError('invalid-argument', 'Search query is required and must be a non-empty string.');
+    }
+    if (query.trim().length < 2) {
+        throwHttpsError('invalid-argument', 'Search query must be at least 2 characters long.');
+    }
+    if (typeof limit !== 'number' || limit < 1 || limit > 20) {
+        throwHttpsError('invalid-argument', 'Limit must be a number between 1 and 20.');
+    }
+
+    const searchTerm = query.trim().toLowerCase();
+
+    try {
+        // Create search variations for better matching
+        const searchVariations = [
+            searchTerm,
+            searchTerm.charAt(0).toUpperCase() + searchTerm.slice(1), // Capitalize first letter
+            searchTerm.toUpperCase() // All uppercase
+        ];
+
+        console.log(`Searching for users with query: "${searchTerm}"`);
+
+        // We'll search for users where displayName contains the search term
+        // Since Firestore doesn't have full-text search, we'll use array-contains-any with a workaround
+        // Note: This is a basic implementation. For production, consider using Algolia or similar service.
+
+        let allUsers = [];
+
+        // Search by exact match first (most relevant)
+        for (const variation of searchVariations) {
+            const exactMatchQuery = db.collection(USERS_COLLECTION)
+                .where('displayName', '>=', variation)
+                .where('displayName', '<=', variation + '\uf8ff')
+                .limit(limit);
+
+            const exactMatchSnapshot = await exactMatchQuery.get();
+            exactMatchSnapshot.docs.forEach(doc => {
+                const userData = doc.data();
+                allUsers.push({
+                    userId: doc.id,
+                    displayName: userData.displayName,
+                    profilePictureUrl: userData.profilePictureUrl || null,
+                    followersCount: userData.followersCount || 0,
+                    postsCount: userData.postsCount || 0,
+                    matchType: 'exact'
+                });
+            });
+        }
+
+
+        const uniqueUsers = allUsers
+            .filter((user, index, self) => 
+                index === self.findIndex(u => u.userId === user.userId) && 
+                user.userId !== userId
+            )
+            .slice(0, limit);
+
+        uniqueUsers.sort((a, b) => {
+            if (a.matchType !== b.matchType) {
+                return a.matchType === 'exact' ? -1 : 1;
+            }
+            return b.followersCount - a.followersCount;
+        });
+
+        console.log(`Found ${uniqueUsers.length} users matching query: "${searchTerm}"`);
+
+        return {
+            users: uniqueUsers,
+            query: searchTerm,
+            count: uniqueUsers.length,
+            message: 'User search completed successfully.'
+        };
+
+    } catch (error) {
+        console.error(`Error in handleSearchUsers for query "${searchTerm}":`, error);
+        if (error instanceof functions.https.HttpsError) {
+            throw error;
+        }
+        throwHttpsError('internal', 'Failed to search users.', error.message);
     }
 }
 
