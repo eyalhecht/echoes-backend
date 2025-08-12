@@ -1625,7 +1625,7 @@ async function handleGetSuggestedUsers(payload, userId) {
 async function handleSearchUsers(payload, userId) {
     const { query, limit = 10 } = payload;
 
-    // Input validation
+    // Input vali dation
     if (!query || typeof query !== 'string' || query.trim().length === 0) {
         throwHttpsError('invalid-argument', 'Search query is required and must be a non-empty string.');
     }
