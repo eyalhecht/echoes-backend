@@ -95,6 +95,8 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
                 return await handleGetFollowersFollowing(payload, userId, action);
             case 'searchUsers':
                 return await handleSearchUsers(payload, userId);
+            case 'searchPosts':
+                return await handleSearchPosts(payload, userId);
 
             //     case 'updateProfile':
             //         return await handleUpdateProfile(payload, userId);
@@ -158,13 +160,100 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
 //     }
 // }
 //
-// Existing imports and setup in your BE file (e.g., Firebase Admin SDK)
-// import * as admin from 'firebase-admin';
-// admin.initializeApp();
-// const db = admin.firestore();
-
-// Assuming POSTS_COLLECTION is defined elsewhere, e.g.,
-// const POSTS_COLLECTION = 'posts';
+function generateSearchKeywords(postData) {
+    const keywords = new Set(); // Use Set to automatically handle duplicates
+    
+    // Helper to clean and split text
+    const cleanAndSplit = (text) => {
+        if (!text || typeof text !== 'string') return [];
+        return text
+            .toLowerCase()
+            .replace(/[^\w\s]/g, ' ') // Replace punctuation with spaces
+            .split(/\s+/) // Split on whitespace
+            .filter(word => word.length > 1); // Filter out single characters
+    };
+    
+    // Helper to add array of strings
+    const addArrayTerms = (arr) => {
+        if (Array.isArray(arr)) {
+            arr.forEach(item => {
+                if (typeof item === 'string') {
+                    cleanAndSplit(item).forEach(word => keywords.add(word));
+                }
+            });
+        }
+    };
+    
+    // 1. Add words from top-level description
+    if (postData.description) {
+        cleanAndSplit(postData.description).forEach(word => keywords.add(word));
+    }
+    
+    // 2. Add top-level tags
+    addArrayTerms(postData.tags);
+    
+    // 3. Add year as string
+    if (Array.isArray(postData.year)) {
+        postData.year.forEach(y => {
+            if (typeof y === 'number') {
+                keywords.add(y.toString());
+            }
+        });
+    }
+    
+    // 4. Process AiMetadata if it exists
+    if (postData.AiMetadata && typeof postData.AiMetadata === 'object') {
+        const ai = postData.AiMetadata;
+        
+        // AI description
+        if (ai.description) {
+            cleanAndSplit(ai.description).forEach(word => keywords.add(word));
+        }
+        
+        // Cultural context
+        if (ai.cultural_context) {
+            cleanAndSplit(ai.cultural_context).forEach(word => keywords.add(word));
+        }
+        
+        // Historical period
+        if (ai.historical_period) {
+            cleanAndSplit(ai.historical_period).forEach(word => keywords.add(word));
+        }
+        
+        // Geographic terms
+        addArrayTerms(ai.geographic_terms);
+        
+        // Subject terms
+        addArrayTerms(ai.subject_terms);
+        
+        // All tags from AI
+        addArrayTerms(ai.tags);
+        
+        // People identified (extract names without confidence levels)
+        if (Array.isArray(ai.people_identified)) {
+            ai.people_identified.forEach(person => {
+                if (typeof person === 'string') {
+                    // Remove confidence indicators like "(definite)" or "(probable)"
+                    const cleanName = person.replace(/\s*\([^)]*\)\s*/g, '');
+                    cleanAndSplit(cleanName).forEach(word => keywords.add(word));
+                }
+            });
+        }
+        
+        // Date estimate
+        if (ai.date_estimate) {
+            cleanAndSplit(ai.date_estimate).forEach(word => keywords.add(word));
+        }
+        
+        // Location from AI
+        if (ai.location) {
+            cleanAndSplit(ai.location).forEach(word => keywords.add(word));
+        }
+    }
+    
+    // Convert Set to Array and return
+    return Array.from(keywords).sort(); // Sort for consistency
+}
 
 async function handleGetFeed(payload, userId) {
     const { limit = 10, lastPostId = null } = payload;
@@ -355,6 +444,11 @@ async function handleCreatePost(payload, userId) {
             AiMetadata
             // safeSearch: safeSearchLikelihood,
         };
+
+        const searchKeywords = generateSearchKeywords(postData);
+        postData.searchKeywords = searchKeywords;
+
+        console.log(`Generated ${searchKeywords.length} search keywords:`, searchKeywords.slice(0, 10)); // Log first 10 for debugging
 
             // Create the post
             transaction.set(newPostRef, postData);
@@ -1706,6 +1800,180 @@ async function handleSearchUsers(payload, userId) {
         }
         throwHttpsError('internal', 'Failed to search users.', error.message);
     }
+}
+
+async function handleSearchPosts(payload, userId) {
+    const { query, limit = 20, lastPostId = null } = payload;
+
+    // Input validation
+    if (!query || typeof query !== 'string' || query.trim().length === 0) {
+        throwHttpsError('invalid-argument', 'Search query is required and must be a non-empty string.');
+    }
+    if (query.trim().length < 2) {
+        throwHttpsError('invalid-argument', 'Search query must be at least 2 characters long.');
+    }
+    if (typeof limit !== 'number' || limit < 1 || limit > 50) {
+        throwHttpsError('invalid-argument', 'Limit must be a number between 1 and 50.');
+    }
+
+    try {
+        // Process search query: lowercase, split, clean
+        const searchTerms = query
+            .toLowerCase()
+            .replace(/[^\w\s]/g, ' ') // Replace punctuation with spaces
+            .split(/\s+/) // Split on whitespace
+            .filter(word => word.length > 1) // Filter out single characters
+            .slice(0, 10); // Limit to 10 terms for performance
+
+        if (searchTerms.length === 0) {
+            return {
+                posts: [],
+                query: query.trim(),
+                searchTerms: [],
+                totalResults: 0,
+                message: 'No valid search terms found.'
+            };
+        }
+
+        console.log(`Searching posts with terms: [${searchTerms.join(', ')}]`);
+
+        // Build Firestore query using array-contains-any
+        let postsQuery = db.collection(POSTS_COLLECTION)
+            .where('searchKeywords', 'array-contains-any', searchTerms)
+            .orderBy('createdAt', 'desc');
+
+        // Handle pagination
+        if (lastPostId) {
+            const lastPostSnapshot = await db.collection(POSTS_COLLECTION).doc(lastPostId).get();
+            if (lastPostSnapshot.exists) {
+                postsQuery = postsQuery.startAfter(lastPostSnapshot);
+            }
+        }
+
+        // Get more results than needed for client-side filtering
+        const querySnapshot = await postsQuery.limit(limit * 3).get();
+
+        // Client-side filtering: ensure ALL search terms are present
+        const filteredPosts = [];
+
+        querySnapshot.docs.forEach(doc => {
+            const postData = doc.data();
+            const postKeywords = postData.searchKeywords || [];
+
+            // Check if ALL search terms are present in this post's keywords
+            const hasAllTerms = searchTerms.every(term =>
+                postKeywords.some(keyword => keyword.includes(term))
+            );
+
+            if (hasAllTerms && filteredPosts.length < limit) {
+                filteredPosts.push({
+                    id: doc.id,
+                    ...postData,
+                    // Add search relevance info
+                    matchedTerms: searchTerms.filter(term =>
+                        postKeywords.some(keyword => keyword.includes(term))
+                    ),
+                    relevanceScore: calculateRelevanceScore(postData, searchTerms)
+                });
+            }
+        });
+
+        // Sort by relevance score (highest first)
+        filteredPosts.sort((a, b) => b.relevanceScore - a.relevanceScore);
+
+        // Add user interaction data (like/bookmark status)
+        const enrichedPosts = await Promise.all(
+            filteredPosts.map(async (post) => {
+                try {
+                    // Check if current user liked this post
+                    const likeDocRef = db.collection(POSTS_COLLECTION)
+                        .doc(post.id)
+                        .collection('likes')
+                        .doc(userId);
+                    const likeDoc = await likeDocRef.get();
+                    post.likedByCurrentUser = likeDoc.exists;
+
+                    // Check if current user bookmarked this post
+                    const bookmarkDocRef = db.collection(USERS_COLLECTION)
+                        .doc(userId)
+                        .collection('bookmarks')
+                        .doc(post.id);
+                    const bookmarkDoc = await bookmarkDocRef.get();
+                    post.bookmarkedByCurrentUser = bookmarkDoc.exists;
+
+                } catch (err) {
+                    console.error(`Error checking interactions for post ${post.id}:`, err);
+                    post.likedByCurrentUser = false;
+                    post.bookmarkedByCurrentUser = false;
+                }
+                return post;
+            })
+        );
+
+        const hasMore = querySnapshot.docs.length >= (limit * 3) && enrichedPosts.length >= limit;
+        const lastVisibleDoc = enrichedPosts.length > 0 ?
+            querySnapshot.docs.find(doc => doc.id === enrichedPosts[enrichedPosts.length - 1].id) :
+            null;
+
+        console.log(`Found ${enrichedPosts.length} posts matching all search terms: [${searchTerms.join(', ')}]`);
+
+        return {
+            posts: enrichedPosts,
+            query: query.trim(),
+            searchTerms: searchTerms,
+            totalResults: enrichedPosts.length,
+            hasMore: hasMore,
+            lastDocId: lastVisibleDoc ? lastVisibleDoc.id : null,
+            message: 'Post search completed successfully.'
+        };
+
+    } catch (error) {
+        console.error(`Error in handleSearchPosts for query "${query}":`, error);
+        if (error instanceof functions.https.HttpsError) {
+            throw error;
+        }
+        throwHttpsError('internal', 'Failed to search posts.', error.message);
+    }
+}
+
+// Helper function to calculate relevance score
+function calculateRelevanceScore(postData, searchTerms) {
+    let score = 0;
+    const keywords = postData.searchKeywords || [];
+    
+    searchTerms.forEach(term => {
+        // Exact matches in different fields get different weights
+        if (postData.description && postData.description.toLowerCase().includes(term)) {
+            score += 10; // High weight for description matches
+        }
+        
+        if (postData.tags && postData.tags.some(tag => tag.toLowerCase().includes(term))) {
+            score += 8; // High weight for tag matches
+        }
+        
+        if (postData.AiMetadata?.tags && postData.AiMetadata.tags.some(tag => tag.toLowerCase().includes(term))) {
+            score += 7; // AI tags
+        }
+        
+        if (postData.AiMetadata?.subject_terms && postData.AiMetadata.subject_terms.some(subject => subject.toLowerCase().includes(term))) {
+            score += 6; // Subject terms
+        }
+        
+        if (postData.AiMetadata?.geographic_terms && postData.AiMetadata.geographic_terms.some(geo => geo.toLowerCase().includes(term))) {
+            score += 5; // Geographic terms
+        }
+        
+        // General keyword match (lowest weight)
+        if (keywords.some(keyword => keyword.includes(term))) {
+            score += 1;
+        }
+    });
+    
+    // Boost score based on post engagement
+    score += (postData.likesCount || 0) * 0.1;
+    score += (postData.commentsCount || 0) * 0.2;
+    
+    return score;
 }
 
 // async function handleUpdateProfile(payload, userId) {
