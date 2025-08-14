@@ -22,11 +22,129 @@ const LIKES_SUBCOLLECTION = 'likes';
 const FOLLOWERS_SUBCOLLECTION = 'followers';
 const FOLLOWING_SUBCOLLECTION = 'following';
 
+// --- Rate Limiting Configuration ---
+const RATE_LIMITS = {
+    createPost: { max: 5, windowMs: 60 * 60 * 1000 },      // 5 per hour
+    likePost: { max: 100, windowMs: 60 * 60 * 1000 },      // 100 per hour
+    toggleBookmark: { max: 100, windowMs: 60 * 60 * 1000 }, // 100 per hour
+    addComment: { max: 20, windowMs: 60 * 60 * 1000 },     // 20 per hour
+    followUser: { max: 50, windowMs: 60 * 60 * 1000 },     // 50 per hour
+    unfollowUser: { max: 50, windowMs: 60 * 60 * 1000 },   // 50 per hour
+    searchPosts: { max: 100, windowMs: 60 * 60 * 1000 },   // 100 per hour
+    searchUsers: { max: 50, windowMs: 60 * 60 * 1000 },    // 50 per hour
+    getFeed: { max: 200, windowMs: 60 * 60 * 1000 },       // 200 per hour
+    getProfile: { max: 500, windowMs: 60 * 60 * 1000 },    // 500 per hour
+    getUserPosts: { max: 300, windowMs: 60 * 60 * 1000 },  // 300 per hour
+    createUserProfile: { max: 2, windowMs: 60 * 60 * 1000 }, // 2 per hour
+    deletePost: { max: 10, windowMs: 60 * 60 * 1000 },     // 10 per hour
+    getComments: { max: 200, windowMs: 60 * 60 * 1000 },   // 200 per hour
+    getPostsByLocation: { max: 100, windowMs: 60 * 60 * 1000 }, // 100 per hour
+    getSuggestedUsers: { max: 50, windowMs: 60 * 60 * 1000 }, // 50 per hour
+    getFollowersList: { max: 20, windowMs: 60 * 60 * 1000 }, // 20 per hour
+    getFollowingList: { max: 20, windowMs: 60 * 60 * 1000 }, // 20 per hour
+};
+
+const rateLimiter = {
+    users: new Map(),
+    cleanup: null
+};
+
 // --- Helper for standardized error messages ---
 // This ensures your errors are caught nicely by the client-side Firebase SDK
 const throwHttpsError = (code, message, details) => {
     throw new functions.https.HttpsError(code, message, details);
 };
+
+// --- Rate Limiting Functions ---
+const checkRateLimit = (userId, action) => {
+    const limits = RATE_LIMITS[action];
+    if (!limits) {
+        return true;
+    }
+
+    const now = Date.now();
+    const userLimits = rateLimiter.users.get(userId);
+    
+    if (!userLimits) {
+        return true;
+    }
+
+    const actionLimit = userLimits[action];
+    if (!actionLimit) {
+        return true; // First request for this action
+    }
+
+    // Check if window has expired
+    if (now >= actionLimit.resetTime) {
+        return true; // Window expired, allow request
+    }
+
+    // Check if within limit
+    return actionLimit.count < limits.max;
+};
+
+const incrementRateLimit = (userId, action) => {
+    const limits = RATE_LIMITS[action];
+    if (!limits) {
+        return; // No limit defined for this action
+    }
+
+    const now = Date.now();
+    
+    // Get or create user limits
+    let userLimits = rateLimiter.users.get(userId);
+    if (!userLimits) {
+        userLimits = {};
+        rateLimiter.users.set(userId, userLimits);
+    }
+
+    // Get or create action limit
+    let actionLimit = userLimits[action];
+    if (!actionLimit || now >= actionLimit.resetTime) {
+        // Create new window
+        actionLimit = {
+            count: 1,
+            resetTime: now + limits.windowMs
+        };
+        userLimits[action] = actionLimit;
+    } else {
+        // Increment existing window
+        actionLimit.count++;
+    }
+};
+
+const cleanupExpiredEntries = () => {
+    const now = Date.now();
+    
+    for (const [userId, userLimits] of rateLimiter.users.entries()) {
+        const activeActions = {};
+        let hasActiveActions = false;
+
+        // Check each action for this user
+        for (const [action, actionLimit] of Object.entries(userLimits)) {
+            if (now < actionLimit.resetTime) {
+                // Action limit is still active
+                activeActions[action] = actionLimit;
+                hasActiveActions = true;
+            }
+        }
+
+        if (hasActiveActions) {
+            // Update user with only active actions
+            rateLimiter.users.set(userId, activeActions);
+        } else {
+            // Remove user entirely if no active actions
+            rateLimiter.users.delete(userId);
+        }
+    }
+
+    console.log(`Rate limiter cleanup: ${rateLimiter.users.size} active users`);
+};
+
+// Start cleanup interval when module loads
+if (!rateLimiter.cleanup) {
+    rateLimiter.cleanup = setInterval(cleanupExpiredEntries, 15 * 60 * 1000); // Every 15 minutes
+}
 
 // --- Your Main API  Gateway Callable Function ---
 // This function handles all client-side API calls and dispatches to appropriate logic.
@@ -48,28 +166,41 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
     console.log(`action:`,action);
     console.log(`payload:`,payload);
 
+    // 3. **Rate Limiting Check**
+    if (!checkRateLimit(userId, action)) {
+        console.warn(`Rate limit exceeded: ${userId} attempted ${action}`);
+        throwHttpsError('resource-exhausted', 'Rate limit exceeded. Please try again later.');
+    }
+
     // if (!action || typeof action !== 'string') {
     //     throwHttpsError('invalid-argument', 'Action is required and must be a string.');
     // }
 
     // Use a switch statement or object mapping to dispatch to specific handlers
     try {
+        let result;
         switch (action) {
             //     case 'createPost':
             //         return await handleCreatePost(payload, userId);
             case 'followUser':
             case 'unfollowUser':
-                return handleFollowUnfollow(payload, userId, action);
+                result = await handleFollowUnfollow(payload, userId, action);
+                break;
             case 'getFeed':
-                return await handleGetFeed(payload, userId);
+                result = await handleGetFeed(payload, userId);
+                break;
             case 'createPost':
-                return await handleCreatePost(payload, userId);
+                result = await handleCreatePost(payload, userId);
+                break;
             case 'createUserProfile':
-                return await handleCreateUserProfile(payload, userId);
+                result = await handleCreateUserProfile(payload, userId);
+                break;
             case 'likePost':
-                return await handleLikePost(payload, userId);
+                result = await handleLikePost(payload, userId);
+                break;
             case 'toggleBookmark':
-                return await handleToggleBookmark(payload, userId);
+                result = await handleToggleBookmark(payload, userId);
+                break;
             //     case 'likePost':
             //         return await handleLikePost(payload, userId);
             //     case 'addComment':
@@ -77,26 +208,36 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
             //     case 'followUser':
             //         return await handleFollowUser(payload, userId);
             case 'getProfile':
-                return await handleGetProfile(payload, userId);
+                result = await handleGetProfile(payload, userId);
+                break;
             case 'getUserPosts':
-                return await handleGetUserPosts(payload, userId);
+                result = await handleGetUserPosts(payload, userId);
+                break;
             case 'deletePost':
-                return await handleDeletePost(payload, userId);
+                result = await handleDeletePost(payload, userId);
+                break;
             case 'addComment':
-                return await handleAddComment(payload, userId);
+                result = await handleAddComment(payload, userId);
+                break;
             case 'getComments':
-                return await handleGetComments(payload, userId);
+                result = await handleGetComments(payload, userId);
+                break;
             case 'getPostsByLocation':
-                return await handleGetPostsByLocation(payload, userId);
+                result = await handleGetPostsByLocation(payload, userId);
+                break;
             case 'getSuggestedUsers':
-                return await handleGetSuggestedUsers(payload, userId);
+                result = await handleGetSuggestedUsers(payload, userId);
+                break;
             case 'getFollowersList':
             case 'getFollowingList':
-                return await handleGetFollowersFollowing(payload, userId, action);
+                result = await handleGetFollowersFollowing(payload, userId, action);
+                break;
             case 'searchUsers':
-                return await handleSearchUsers(payload, userId);
+                result = await handleSearchUsers(payload, userId);
+                break;
             case 'searchPosts':
-                return await handleSearchPosts(payload, userId);
+                result = await handleSearchPosts(payload, userId);
+                break;
 
             //     case 'updateProfile':
             //         return await handleUpdateProfile(payload, userId);
@@ -104,6 +245,11 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
             default:
                 throwHttpsError('not-found', `Action "${action}" not found.`);
         }
+
+        // 4. **Increment Rate Limit Counter (only after successful execution)**
+        incrementRateLimit(userId, action);
+        
+        return result;
 
     } catch (error) {
         // Re-throw HttpsErrors, convert other errors to a generic internal error
