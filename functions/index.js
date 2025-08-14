@@ -5,6 +5,8 @@ import admin from 'firebase-admin';
 import { GeoPoint } from 'firebase-admin/firestore';
 import vision from '@google-cloud/vision';
 import OpenAI from 'openai';
+import { rateLimitMiddleware, incrementRateLimit } from './middleware/rateLimiter.js';
+import { COLLECTIONS, SUBCOLLECTIONS, LIMITS, DEFAULTS, POST_TYPES, AI_CONFIG, GEO, TIME } from './utils/constants.js';
 
 // --- Initialize Firebase Admin SDK ---
 // This initializes the SDK with your Firebase project's credentials automatically
@@ -14,19 +16,13 @@ admin.initializeApp();
 // Get a Firestore database instance
 const db = admin.firestore();
 
-// --- Constants / Configuration ---
-const POSTS_COLLECTION = 'posts';
-const USERS_COLLECTION = 'users';
-const COMMENTS_SUBCOLLECTION = 'comments';
-const LIKES_SUBCOLLECTION = 'likes';
-const FOLLOWERS_SUBCOLLECTION = 'followers';
-const FOLLOWING_SUBCOLLECTION = 'following';
-
 // --- Helper for standardized error messages ---
 // This ensures your errors are caught nicely by the client-side Firebase SDK
 const throwHttpsError = (code, message, details) => {
     throw new functions.https.HttpsError(code, message, details);
 };
+
+// --- Rate Limiting Configuration ---
 
 // --- Your Main API  Gateway Callable Function ---
 // This function handles all client-side API calls and dispatches to appropriate logic.
@@ -48,28 +44,38 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
     console.log(`action:`,action);
     console.log(`payload:`,payload);
 
+    // 3. **Rate Limiting Check**
+    rateLimitMiddleware(userId, action);
+
     // if (!action || typeof action !== 'string') {
     //     throwHttpsError('invalid-argument', 'Action is required and must be a string.');
     // }
 
     // Use a switch statement or object mapping to dispatch to specific handlers
     try {
+        let result;
         switch (action) {
             //     case 'createPost':
             //         return await handleCreatePost(payload, userId);
             case 'followUser':
             case 'unfollowUser':
-                return handleFollowUnfollow(payload, userId, action);
+                result = await handleFollowUnfollow(payload, userId, action);
+                break;
             case 'getFeed':
-                return await handleGetFeed(payload, userId);
+                result = await handleGetFeed(payload, userId);
+                break;
             case 'createPost':
-                return await handleCreatePost(payload, userId);
+                result = await handleCreatePost(payload, userId);
+                break;
             case 'createUserProfile':
-                return await handleCreateUserProfile(payload, userId);
+                result = await handleCreateUserProfile(payload, userId);
+                break;
             case 'likePost':
-                return await handleLikePost(payload, userId);
+                result = await handleLikePost(payload, userId);
+                break;
             case 'toggleBookmark':
-                return await handleToggleBookmark(payload, userId);
+                result = await handleToggleBookmark(payload, userId);
+                break;
             //     case 'likePost':
             //         return await handleLikePost(payload, userId);
             //     case 'addComment':
@@ -77,26 +83,36 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
             //     case 'followUser':
             //         return await handleFollowUser(payload, userId);
             case 'getProfile':
-                return await handleGetProfile(payload, userId);
+                result = await handleGetProfile(payload, userId);
+                break;
             case 'getUserPosts':
-                return await handleGetUserPosts(payload, userId);
+                result = await handleGetUserPosts(payload, userId);
+                break;
             case 'deletePost':
-                return await handleDeletePost(payload, userId);
+                result = await handleDeletePost(payload, userId);
+                break;
             case 'addComment':
-                return await handleAddComment(payload, userId);
+                result = await handleAddComment(payload, userId);
+                break;
             case 'getComments':
-                return await handleGetComments(payload, userId);
+                result = await handleGetComments(payload, userId);
+                break;
             case 'getPostsByLocation':
-                return await handleGetPostsByLocation(payload, userId);
+                result = await handleGetPostsByLocation(payload, userId);
+                break;
             case 'getSuggestedUsers':
-                return await handleGetSuggestedUsers(payload, userId);
+                result = await handleGetSuggestedUsers(payload, userId);
+                break;
             case 'getFollowersList':
             case 'getFollowingList':
-                return await handleGetFollowersFollowing(payload, userId, action);
+                result = await handleGetFollowersFollowing(payload, userId, action);
+                break;
             case 'searchUsers':
-                return await handleSearchUsers(payload, userId);
+                result = await handleSearchUsers(payload, userId);
+                break;
             case 'searchPosts':
-                return await handleSearchPosts(payload, userId);
+                result = await handleSearchPosts(payload, userId);
+                break;
 
             //     case 'updateProfile':
             //         return await handleUpdateProfile(payload, userId);
@@ -104,6 +120,11 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
             default:
                 throwHttpsError('not-found', `Action "${action}" not found.`);
         }
+
+        // 4. **Increment Rate Limit Counter (only after successful execution)**
+        incrementRateLimit(userId, action);
+        
+        return result;
 
     } catch (error) {
         // Re-throw HttpsErrors, convert other errors to a generic internal error
@@ -256,23 +277,23 @@ function generateSearchKeywords(postData) {
 }
 
 async function handleGetFeed(payload, userId) {
-    const { limit = 10, lastPostId = null } = payload;
+    const { limit = DEFAULTS.FEED_LIMIT, lastPostId = null } = payload;
     const POST_LIMIT = limit;
 
     // Basic validation
-    if (typeof limit !== 'number' || limit < 1 || limit > 100) {
-        throwHttpsError('invalid-argument', 'Limit must be a number between 1 and 100.');
+    if (typeof limit !== 'number' || limit < 1 || limit > LIMITS.FEED_LIMIT_MAX) {
+        throwHttpsError('invalid-argument', `Limit must be a number between 1 and ${LIMITS.FEED_LIMIT_MAX}.`);
     }
     if (lastPostId !== null && typeof lastPostId !== 'string') {
         throwHttpsError('invalid-argument', 'lastPostId must be a string or null.');
     }
 
     try {
-        let postsQuery = db.collection(POSTS_COLLECTION)
+        let postsQuery = db.collection(COLLECTIONS.POSTS)
             .orderBy('createdAt', 'desc');
 
         if (lastPostId) {
-            const lastPostSnapshot = await db.collection(POSTS_COLLECTION).doc(lastPostId).get();
+            const lastPostSnapshot = await db.collection(COLLECTIONS.POSTS).doc(lastPostId).get();
             if (lastPostSnapshot.exists) {
                 postsQuery = postsQuery.startAfter(lastPostSnapshot);
             } else {
@@ -293,17 +314,17 @@ async function handleGetFeed(payload, userId) {
             const postData = { id: doc.id, ...doc.data() };
             try {
                 // Check if post is liked by current user
-                const likeDocRef = db.collection(POSTS_COLLECTION)
+                const likeDocRef = db.collection(COLLECTIONS.POSTS)
                     .doc(doc.id)
-                    .collection('likes')
+                    .collection(SUBCOLLECTIONS.LIKES)
                     .doc(userId);
                 const likeDoc = await likeDocRef.get();
                 postData.likedByCurrentUser = likeDoc.exists;
 
                 // Check if post is bookmarked by current user
-                const bookmarkDocRef = db.collection(USERS_COLLECTION)
+                const bookmarkDocRef = db.collection(COLLECTIONS.USERS)
                     .doc(userId)
-                    .collection('bookmarks')
+                    .collection(SUBCOLLECTIONS.BOOKMARKS)
                     .doc(doc.id);
                 const bookmarkDoc = await bookmarkDocRef.get();
                 postData.bookmarkedByCurrentUser = bookmarkDoc.exists;
@@ -338,7 +359,10 @@ async function handleCreatePost(payload, userId) {
     if (typeof description !== 'string' || description.trim().length === 0) {
         throwHttpsError('invalid-argument', 'Description is required and must be a non-empty string.');
     }
-    if (!['photo', 'video', 'document', 'item', 'youtube'].includes(type)) {
+    if (description.trim().length > LIMITS.POST_DESCRIPTION_MAX) {
+        throwHttpsError('invalid-argument', `Description cannot exceed ${LIMITS.POST_DESCRIPTION_MAX} characters.`);
+    }
+    if (!POST_TYPES.includes(type)) {
         throwHttpsError('invalid-argument', 'Invalid post type provided.');
     }
 
@@ -392,15 +416,15 @@ async function handleCreatePost(payload, userId) {
     //     }
     // }
 
-    if (!Array.isArray(year) || year.some(y => typeof y !== 'number' || y < 1000 || y > 3000)) { // Basic year range validation
-        throwHttpsError('invalid-argument', 'Years must be an array of valid numbers.');
+    if (!Array.isArray(year) || year.some(y => typeof y !== 'number' || y < LIMITS.YEAR_MIN || y > LIMITS.YEAR_MAX)) {
+        throwHttpsError('invalid-argument', `Years must be an array of valid numbers between ${LIMITS.YEAR_MIN} and ${LIMITS.YEAR_MAX}.`);
     }
 
     try {
     // --- 2. Use Transaction to ensure data consistency ---
     const result = await db.runTransaction(async (transaction) => {
         // Fetch User Data (for displayName, profilePicUrl etc.)
-        const userRef = db.collection(USERS_COLLECTION).doc(userId);
+        const userRef = db.collection(COLLECTIONS.USERS).doc(userId);
         const userDoc = await transaction.get(userRef);
 
         if (!userDoc.exists) {
@@ -423,7 +447,7 @@ async function handleCreatePost(payload, userId) {
         }
 
             // Create New Post Document in Firestore
-            const newPostRef = db.collection(POSTS_COLLECTION).doc(); // Auto-generate ID
+            const newPostRef = db.collection(COLLECTIONS.POSTS).doc(); // Auto-generate ID
 
         const postData = {
             userId: userId,
@@ -529,7 +553,7 @@ export async function analyzePhoto(photoUrl) {
 
     try {
         const response = await openai.chat.completions.create({
-            model: "gpt-4o",
+            model: AI_CONFIG.MODEL,
             messages: [
                 {
                     role: "system",
@@ -546,14 +570,14 @@ export async function analyzePhoto(photoUrl) {
                             type: "image_url",
                             image_url: {
                                 url: photoUrl,
-                                detail: 'auto'
+                                detail: AI_CONFIG.DETAIL
                             }
                         }
                     ]
                 }
             ],
-            temperature: 0.3,
-            max_tokens: 2000,
+            temperature: AI_CONFIG.TEMPERATURE,
+            max_tokens: AI_CONFIG.MAX_TOKENS,
             response_format: { type: "json_object" }
         });
 
@@ -595,7 +619,7 @@ async function handleCreateUserProfile(payload, userId) {
 
     try {
         // Check if profile already exists
-        const existingProfile = await db.collection(USERS_COLLECTION).doc(userId).get();
+        const existingProfile = await db.collection(COLLECTIONS.USERS).doc(userId).get();
         if (existingProfile.exists) {
             return { message: 'Profile already exists', profile: existingProfile.data() };
         }
@@ -612,7 +636,7 @@ async function handleCreateUserProfile(payload, userId) {
             updatedAt: now,
         };
 
-        await db.collection(USERS_COLLECTION).doc(userId).set(profileData);
+        await db.collection(COLLECTIONS.USERS).doc(userId).set(profileData);
         console.log(`Profile created successfully for ${userId}`);
 
         return { message: 'Profile created successfully', profile: profileData };
@@ -629,8 +653,8 @@ async function handleLikePost(payload, userId) {
         throwHttpsError('invalid-argument', 'A valid postId is required.');
     }
 
-    const postRef = db.collection(POSTS_COLLECTION).doc(postId);
-    const likeRef = postRef.collection(LIKES_SUBCOLLECTION).doc(userId); // Document per user like
+    const postRef = db.collection(COLLECTIONS.POSTS).doc(postId);
+    const likeRef = postRef.collection(SUBCOLLECTIONS.LIKES).doc(userId); // Document per user like
 
     try {
         const result = await db.runTransaction(async (transaction) => {
@@ -688,9 +712,9 @@ async function handleToggleBookmark(payload, userId) {
     try {
         const result = await db.runTransaction(async (transaction) => {
             // References
-            const postRef = db.collection(POSTS_COLLECTION).doc(postId);
-            const userRef = db.collection(USERS_COLLECTION).doc(userId);
-            const bookmarkRef = userRef.collection('bookmarks').doc(postId);
+            const postRef = db.collection(COLLECTIONS.POSTS).doc(postId);
+            const userRef = db.collection(COLLECTIONS.USERS).doc(userId);
+            const bookmarkRef = userRef.collection(SUBCOLLECTIONS.BOOKMARKS).doc(postId);
 
             // Check if post exists
             const postDoc = await transaction.get(postRef);
@@ -922,7 +946,7 @@ async function handleGetProfile(payload, userId) {
     }
 
     try {
-        const userDocRef = db.collection(USERS_COLLECTION).doc(targetId);
+        const userDocRef = db.collection(COLLECTIONS.USERS).doc(targetId);
         const userDoc = await userDocRef.get();
 
         if (!userDoc.exists) {
@@ -932,14 +956,14 @@ async function handleGetProfile(payload, userId) {
         const profileData = userDoc.data();
 
         // --- Fetch Followers List (IDs) ---
-        const followersSnapshot = await userDocRef.collection('followers').get();
+        const followersSnapshot = await userDocRef.collection(SUBCOLLECTIONS.FOLLOWERS).get();
         // Map over the documents to get an array of their IDs
         const followerIds = followersSnapshot.docs.map(doc => doc.id);
         profileData.followers = followerIds; // Add the array of IDs to profileData
         profileData.followersCount = followerIds.length; // You can still provide the count
 
         // --- Fetch Following List (IDs) ---
-        const followingSnapshot = await userDocRef.collection('following').get();
+        const followingSnapshot = await userDocRef.collection(SUBCOLLECTIONS.FOLLOWING).get();
         // Map over the documents to get an array of their IDs
         const followingIds = followingSnapshot.docs.map(doc => doc.id);
         profileData.following = followingIds; // Add the array of IDs to profileData
@@ -997,21 +1021,21 @@ async function handleGetFollowersFollowing(payload, userId, actionType) {
 
     try {
         // Check if user exists
-        const userDoc = await db.collection(USERS_COLLECTION).doc(profileUserId).get();
+        const userDoc = await db.collection(COLLECTIONS.USERS).doc(profileUserId).get();
         if (!userDoc.exists) {
             throwHttpsError('not-found', 'User not found.');
         }
 
         const collectionName = actionType === 'getFollowersList' ? 'followers' : 'following';
 
-        let query = db.collection(USERS_COLLECTION)
+        let query = db.collection(COLLECTIONS.USERS)
             .doc(profileUserId)
             .collection(collectionName)
             .orderBy('createdAt', 'desc');
 
         // Handle pagination
         if (lastUserId) {
-            const lastUserSnapshot = await db.collection(USERS_COLLECTION)
+            const lastUserSnapshot = await db.collection(COLLECTIONS.USERS)
                 .doc(profileUserId)
                 .collection(collectionName)
                 .doc(lastUserId)
@@ -1036,7 +1060,7 @@ async function handleGetFollowersFollowing(payload, userId, actionType) {
 
                 try {
                     // Get the full user profile data
-                    const targetUserDoc = await db.collection(USERS_COLLECTION).doc(targetUserId).get();
+                    const targetUserDoc = await db.collection(COLLECTIONS.USERS).doc(targetUserId).get();
 
                     if (targetUserDoc.exists) {
                         const userData = targetUserDoc.data();
@@ -1111,7 +1135,7 @@ async function handleGetPostsByLocation(payload, userId) {
         const southWest = new GeoPoint(center.lat - latDelta, center.lng - lngDelta);
 
         // Query posts with location within approximate bounds
-        let postsQuery = db.collection(POSTS_COLLECTION)
+        let postsQuery = db.collection(COLLECTIONS.POSTS)
             .where('location', '>=', southWest)
             .where('location', '<=', northEast)
             .orderBy('location')
@@ -1149,7 +1173,7 @@ async function handleGetPostsByLocation(payload, userId) {
                 .map(async (post) => {
                     try {
                         // Check if current user liked this post
-                        const likeDocRef = db.collection(POSTS_COLLECTION)
+                        const likeDocRef = db.collection(COLLECTIONS.POSTS)
                             .doc(post.id)
                             .collection('likes')
                             .doc(userId);
@@ -1157,7 +1181,7 @@ async function handleGetPostsByLocation(payload, userId) {
                         post.likedByCurrentUser = likeDoc.exists;
 
                         // Check if current user bookmarked this post
-                        const bookmarkDocRef = db.collection(USERS_COLLECTION)
+                        const bookmarkDocRef = db.collection(COLLECTIONS.USERS)
                             .doc(userId)
                             .collection('bookmarks')
                             .doc(post.id);
@@ -1219,8 +1243,8 @@ async function handleFollowUnfollow(payload, userId, actionType) {
         throwHttpsError('invalid-argument', 'Invalid action type. Must be "followUser" or "unfollowUser".');
     }
 
-    const currentUserRef = db.collection(USERS_COLLECTION).doc(userId);
-    const targetUserRef = db.collection(USERS_COLLECTION).doc(targetUserId);
+    const currentUserRef = db.collection(COLLECTIONS.USERS).doc(userId);
+    const targetUserRef = db.collection(COLLECTIONS.USERS).doc(targetUserId);
 
     // Check if both users exist (optional but good for data integrity)
     const [currentUserDoc, targetUserDoc] = await Promise.all([
@@ -1325,17 +1349,17 @@ async function handleGetUserPosts(payload, userId) {
     }
 
     try {
-        const userDoc = await db.collection(USERS_COLLECTION).doc(targetId).get();
+        const userDoc = await db.collection(COLLECTIONS.USERS).doc(targetId).get();
         if (!userDoc.exists) {
             throwHttpsError('not-found', 'User not found.');
         }
 
-        let postsQuery = db.collection(POSTS_COLLECTION)
+        let postsQuery = db.collection(COLLECTIONS.POSTS)
             .where('userId', '==', targetId)
             .orderBy('createdAt', 'desc');
 
         if (lastPostId) {
-            const lastPostSnapshot = await db.collection(POSTS_COLLECTION).doc(lastPostId).get();
+            const lastPostSnapshot = await db.collection(COLLECTIONS.POSTS).doc(lastPostId).get();
             if (lastPostSnapshot.exists) {
                 postsQuery = postsQuery.startAfter(lastPostSnapshot);
             } else {
@@ -1351,14 +1375,14 @@ async function handleGetUserPosts(payload, userId) {
             const postData = { id: doc.id, ...doc.data() };
 
             try {
-                const likeDocRef = db.collection(POSTS_COLLECTION)
+                const likeDocRef = db.collection(COLLECTIONS.POSTS)
                     .doc(doc.id)
                     .collection('likes')
                     .doc(userId); // Use requesting user's ID
                 const likeDoc = await likeDocRef.get();
                 postData.likedByCurrentUser = likeDoc.exists;
 
-                const bookmarkDocRef = db.collection(USERS_COLLECTION)
+                const bookmarkDocRef = db.collection(COLLECTIONS.USERS)
                     .doc(userId) // Use requesting user's ID
                     .collection('bookmarks')
                     .doc(doc.id);
@@ -1408,8 +1432,8 @@ async function handleDeletePost(payload, userId) {
         throwHttpsError('invalid-argument', 'A valid postId is required.');
     }
 
-    const postRef = db.collection(POSTS_COLLECTION).doc(postId);
-    const userRef = db.collection(USERS_COLLECTION).doc(userId); // Define userRef here
+    const postRef = db.collection(COLLECTIONS.POSTS).doc(postId);
+    const userRef = db.collection(COLLECTIONS.USERS).doc(userId); // Define userRef here
 
     try {
         await db.runTransaction(async (transaction) => {
@@ -1436,12 +1460,12 @@ async function handleDeletePost(payload, userId) {
 
             // 2. Delete all subcollections: Likes and Comments
             // Note: For very large collections, consider a separate Cloud Function triggered by onDelete.
-            const likesSnapshot = await postRef.collection(LIKES_SUBCOLLECTION).get();
+            const likesSnapshot = await postRef.collection(SUBCOLLECTIONS.LIKES).get();
             likesSnapshot.docs.forEach(doc => {
                 transaction.delete(doc.ref);
             });
 
-            const commentsSnapshot = await postRef.collection(COMMENTS_SUBCOLLECTION).get();
+            const commentsSnapshot = await postRef.collection(SUBCOLLECTIONS.COMMENTS).get();
             commentsSnapshot.docs.forEach(doc => {
                 transaction.delete(doc.ref);
             });
@@ -1490,8 +1514,8 @@ async function handleAddComment(payload, userId) {
         throwHttpsError('invalid-argument', 'Comment text cannot exceed 1000 characters.');
     }
 
-    const postRef = db.collection(POSTS_COLLECTION).doc(postId);
-    const commentsRef = postRef.collection(COMMENTS_SUBCOLLECTION);
+    const postRef = db.collection(COLLECTIONS.POSTS).doc(postId);
+    const commentsRef = postRef.collection(SUBCOLLECTIONS.COMMENTS);
 
     try {
         const result = await db.runTransaction(async (transaction) => {
@@ -1502,7 +1526,7 @@ async function handleAddComment(payload, userId) {
             }
 
             // Get user data for the comment
-            const userDoc = await transaction.get(db.collection(USERS_COLLECTION).doc(userId));
+            const userDoc = await transaction.get(db.collection(COLLECTIONS.USERS).doc(userId));
             const userData = userDoc.exists ? userDoc.data() : {};
             const userDisplayName = userData.displayName || `User_${userId.substring(0, 8)}`;
             const userProfilePicUrl = userData.profilePictureUrl || null;
@@ -1566,18 +1590,18 @@ async function handleGetComments(payload, userId) {
 
     try {
         // Check if post exists
-        const postRef = db.collection(POSTS_COLLECTION).doc(postId);
+        const postRef = db.collection(COLLECTIONS.POSTS).doc(postId);
         const postDoc = await postRef.get();
         if (!postDoc.exists) {
             throwHttpsError('not-found', 'Post not found.');
         }
 
-        let commentsQuery = postRef.collection(COMMENTS_SUBCOLLECTION)
+        let commentsQuery = postRef.collection(SUBCOLLECTIONS.COMMENTS)
             .orderBy('createdAt', 'desc'); // Most recent comments first
 
         // Handle pagination
         if (lastCommentId) {
-            const lastCommentSnapshot = await postRef.collection(COMMENTS_SUBCOLLECTION).doc(lastCommentId).get();
+            const lastCommentSnapshot = await postRef.collection(SUBCOLLECTIONS.COMMENTS).doc(lastCommentId).get();
             if (lastCommentSnapshot.exists) {
                 commentsQuery = commentsQuery.startAfter(lastCommentSnapshot);
             } else {
@@ -1629,13 +1653,13 @@ async function handleGetSuggestedUsers(payload, userId) {
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
         // Get users that the current user is already following
-        const currentUserRef = db.collection(USERS_COLLECTION).doc(userId);
+        const currentUserRef = db.collection(COLLECTIONS.USERS).doc(userId);
         const followingSnapshot = await currentUserRef.collection('following').get();
         const followingIds = followingSnapshot.docs.map(doc => doc.id);
         followingIds.push(userId); // Also exclude self
 
         // Get posts from the last 30 days
-        const recentPostsSnapshot = await db.collection(POSTS_COLLECTION)
+        const recentPostsSnapshot = await db.collection(COLLECTIONS.POSTS)
             .where('createdAt', '>=', thirtyDaysAgo)
             .get();
 
@@ -1675,7 +1699,7 @@ async function handleGetSuggestedUsers(payload, userId) {
         const suggestedUsers = await Promise.all(
             activeUsers.map(async (user) => {
                 try {
-                    const userDoc = await db.collection(USERS_COLLECTION).doc(user.userId).get();
+                    const userDoc = await db.collection(COLLECTIONS.USERS).doc(user.userId).get();
                     if (userDoc.exists) {
                         const userData = userDoc.data();
                         return {
@@ -1750,7 +1774,7 @@ async function handleSearchUsers(payload, userId) {
 
         // Search by exact match first (most relevant)
         for (const variation of searchVariations) {
-            const exactMatchQuery = db.collection(USERS_COLLECTION)
+            const exactMatchQuery = db.collection(COLLECTIONS.USERS)
                 .where('displayName', '>=', variation)
                 .where('displayName', '<=', variation + '\uf8ff')
                 .limit(limit);
@@ -1838,13 +1862,13 @@ async function handleSearchPosts(payload, userId) {
         console.log(`Searching posts with terms: [${searchTerms.join(', ')}]`);
 
         // Build Firestore query using array-contains-any
-        let postsQuery = db.collection(POSTS_COLLECTION)
+        let postsQuery = db.collection(COLLECTIONS.POSTS)
             .where('searchKeywords', 'array-contains-any', searchTerms)
             .orderBy('createdAt', 'desc');
 
         // Handle pagination
         if (lastPostId) {
-            const lastPostSnapshot = await db.collection(POSTS_COLLECTION).doc(lastPostId).get();
+            const lastPostSnapshot = await db.collection(COLLECTIONS.POSTS).doc(lastPostId).get();
             if (lastPostSnapshot.exists) {
                 postsQuery = postsQuery.startAfter(lastPostSnapshot);
             }
@@ -1886,17 +1910,17 @@ async function handleSearchPosts(payload, userId) {
             filteredPosts.map(async (post) => {
                 try {
                     // Check if current user liked this post
-                    const likeDocRef = db.collection(POSTS_COLLECTION)
+                    const likeDocRef = db.collection(COLLECTIONS.POSTS)
                         .doc(post.id)
-                        .collection('likes')
+                        .collection(SUBCOLLECTIONS.LIKES)
                         .doc(userId);
                     const likeDoc = await likeDocRef.get();
                     post.likedByCurrentUser = likeDoc.exists;
 
                     // Check if current user bookmarked this post
-                    const bookmarkDocRef = db.collection(USERS_COLLECTION)
+                    const bookmarkDocRef = db.collection(COLLECTIONS.USERS)
                         .doc(userId)
-                        .collection('bookmarks')
+                        .collection(SUBCOLLECTIONS.BOOKMARKS)
                         .doc(post.id);
                     const bookmarkDoc = await bookmarkDocRef.get();
                     post.bookmarkedByCurrentUser = bookmarkDoc.exists;
