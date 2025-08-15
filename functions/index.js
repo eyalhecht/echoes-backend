@@ -501,38 +501,57 @@ async function handleCreatePost(payload, userId) {
 
 
 // System prompt for consistent, professional analysis
-const SYSTEM_PROMPT = `You are an expert photo analyst specializing in historical and cultural documentation. You have knowledge of:
+const SYSTEM_PROMPT = `You are an expert historian and archivist analyzing photographs. You have deep knowledge of:
+- Historical periods, events, and cultural movements (1850-present)
 - Getty Vocabulary Program (AAT, TGN) for standardized terms
 - Library of Congress Subject Headings (LCSH)
 - Professional archival cataloging practices
 - Historical figures, celebrities, and notable people
+- Architecture, fashion, technology, and social history across different eras
 
-Your task is to analyze photographs and provide metadata that balances academic rigor with accessibility. Always:
-1. Use controlled vocabularies and standardized terms when available
-2. Provide multiple levels of geographic specificity
-3. Include cultural and historical context
-4. Generate comprehensive tags for high-quality search functionality
-5. Use consistent terminology (e.g., "Berlin" not "berlin", "New York City" not "NYC")
-6. Identify notable people when clearly visible, including historical figures, celebrities, and public personalities`;
+You analyze photos like a detective-historian who pieces together stories from visual evidence. When someone brings you a photograph saying "I found this in my drawer, what am I looking at?", you:
+
+1. Act as a knowledgeable tour guide explaining what they're seeing
+2. Use visual clues (clothing, cars, architecture, photo quality) to determine time period and location
+3. Explain the historical significance and cultural context of what's depicted
+4. Provide both what's visible AND why it matters historically
+5. Use controlled vocabularies and standardized geographic terms
+6. Be specific about locations, dates, and historical context when identifiable
+7. For ordinary scenes with no historical significance, focus on era indicators and social context`;
 
 // User prompt template
-const USER_PROMPT = `Analyze this photograph and provide comprehensive metadata for search and cataloging purposes.
+const USER_PROMPT = `Analyze this photograph like a historian/archivist examining evidence. Someone brought this to you saying "I found this in my drawer, what am I looking at?"
+
+Provide both what's visible AND its historical significance. Act like a tour guide explaining the scene.
 
 Return a JSON object with this exact structure:
 
 {
-  "description": "Clear description of what's happening in the image",
-  "date_estimate": "Time period estimate (e.g., '1960s', '1980s', 'early 2000s')",
+  "description": "Rich contextual analysis combining what's visible with historical significance. Use visual clues (clothing, architecture, technology, photo quality) to determine time/place. Explain what this scene represents historically and culturally. For monuments/landmarks, explain who built it, when, why, and its significance. For ordinary scenes, describe the era and social context. Be like a detective-historian piecing together the story from visual evidence.",
+  "date_estimate": "Time period estimate based on visual clues (e.g., '1960s', '1980s', 'early 2000s')",
   "date_confidence": "definite|probable|possible|unknown",
   "location": "Most specific to general location (e.g., 'Times Square, New York City, United States')",
   "location_confidence": "definite|probable|possible|unknown", 
-  "cultural_context": "Brief cultural or social context",
-  "historical_period": "Historical period or era",
+  "historical_period": "Historical period or era this represents",
   "people_identified": ["Array of specific people if clearly identifiable with confidence levels"],
   "geographic_terms": ["Array of locations with TGN IDs when available, from specific to general"],
   "subject_terms": ["Array of subject classifications with AAT IDs when available"],
   "tags": ["Array of ~20 searchable tags covering objects, people, activities, time, place, style, mood, etc."]
 }
+
+DESCRIPTION GUIDELINES:
+- Act like a knowledgeable tour guide or historian
+- Use visual evidence to determine context (clothing styles, car models, architecture, photo quality)
+- For landmarks/monuments: explain who built it, when, why, and its historical significance
+- For ordinary scenes: describe the era, social context, and what this represents culturally
+- Combine what you see with why it matters historically
+- Be specific about identifiable locations, time periods, and cultural significance
+- For family photos or scenes with no historical significance, focus on era indicators and social context
+
+EXAMPLES:
+- Menorah sculpture → Identify it as the Knesset Menorah, explain Benno Elkan created it, British Parliament gifted it in 1956, describe its location and significance
+- Family photo → "Family gathering from the 1970s based on clothing and photo quality, representing the era when color photography became accessible to middle-class families"
+- Street scene → Use cars, architecture, clothing to date it and explain what this area/era represents historically
 
 Guidelines:
 - Use standardized geographic names (Getty TGN preferred)
@@ -601,7 +620,6 @@ function validateAndCleanResult(result) {
         date_confidence: result.date_confidence || 'unknown',
         location: result.location || 'Unknown location',
         location_confidence: result.location_confidence || 'unknown',
-        cultural_context: result.cultural_context || '',
         historical_period: result.historical_period || '',
         people_identified: Array.isArray(result.people_identified) ? result.people_identified : [],
         geographic_terms: Array.isArray(result.geographic_terms) ? result.geographic_terms : [],
