@@ -113,6 +113,9 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
             case 'searchPosts':
                 result = await handleSearchPosts(payload, userId);
                 break;
+            case 'getBookmarks':
+                result = await handleGetBookmarks(payload, userId);
+                break;
 
             //     case 'updateProfile':
             //         return await handleUpdateProfile(payload, userId);
@@ -2016,6 +2019,118 @@ function calculateRelevanceScore(postData, searchTerms) {
     score += (postData.commentsCount || 0) * 0.2;
     
     return score;
+}
+
+async function handleGetBookmarks(payload, userId) {
+    const { limit = 20, lastBookmarkId = null, requestedUserId = null } = payload;
+
+    // Input validation
+    if (typeof limit !== 'number' || limit < 1 || limit > 50) {
+        throwHttpsError('invalid-argument', 'Limit must be a number between 1 and 50.');
+    }
+    if (lastBookmarkId !== null && typeof lastBookmarkId !== 'string') {
+        throwHttpsError('invalid-argument', 'lastBookmarkId must be a string or null.');
+    }
+
+    const targetUserId = requestedUserId || userId;
+    if (targetUserId !== userId) {
+        throwHttpsError('permission-denied', 'You can only access your own bookmarks.');
+    }
+
+    try {
+        const userRef = db.collection(COLLECTIONS.USERS).doc(userId);
+        
+        // Check if user exists
+        const userDoc = await userRef.get();
+        if (!userDoc.exists) {
+            throwHttpsError('not-found', 'User not found.');
+        }
+
+        // Build query for user's bookmarks
+        let bookmarksQuery = userRef.collection(SUBCOLLECTIONS.BOOKMARKS)
+            .orderBy('bookmarkedAt', 'desc'); // Most recently bookmarked first
+
+        // Handle pagination
+        if (lastBookmarkId) {
+            const lastBookmarkSnapshot = await userRef.collection(SUBCOLLECTIONS.BOOKMARKS).doc(lastBookmarkId).get();
+            if (lastBookmarkSnapshot.exists) {
+                bookmarksQuery = bookmarksQuery.startAfter(lastBookmarkSnapshot);
+            } else {
+                console.warn(`lastBookmarkId ${lastBookmarkId} not found, fetching from start.`);
+            }
+        }
+
+        // Get bookmarks with pagination check
+        const bookmarksSnapshot = await bookmarksQuery.limit(limit + 1).get();
+        const bookmarkDocs = bookmarksSnapshot.docs.slice(0, limit);
+        const hasMore = bookmarksSnapshot.docs.length > limit;
+
+        // Get full post data for each bookmark
+        const bookmarkedPosts = await Promise.all(
+            bookmarkDocs.map(async (bookmarkDoc) => {
+                const bookmarkData = bookmarkDoc.data();
+                const postId = bookmarkDoc.id; // The document ID is the postId
+
+                try {
+                    // Get the full post data
+                    const postDoc = await db.collection(COLLECTIONS.POSTS).doc(postId).get();
+                    
+                    if (!postDoc.exists) {
+                        // Post has been deleted, but bookmark still exists
+                        console.warn(`Bookmarked post ${postId} no longer exists`);
+                        return null;
+                    }
+
+                    const postData = { id: postDoc.id, ...postDoc.data() };
+
+                    // Add bookmark metadata
+                    postData.bookmarkedAt = bookmarkData.bookmarkedAt;
+                    postData.bookmarkedByCurrentUser = true; // Obviously true since it's in their bookmarks
+
+                    // Check if current user has liked this post
+                    try {
+                        const likeDocRef = db.collection(COLLECTIONS.POSTS)
+                            .doc(postId)
+                            .collection(SUBCOLLECTIONS.LIKES)
+                            .doc(userId);
+                        const likeDoc = await likeDocRef.get();
+                        postData.likedByCurrentUser = likeDoc.exists;
+                    } catch (err) {
+                        console.error(`Error checking like status for post ${postId}:`, err);
+                        postData.likedByCurrentUser = false;
+                    }
+
+                    return postData;
+
+                } catch (error) {
+                    console.error(`Error fetching post data for bookmark ${postId}:`, error);
+                    return null;
+                }
+            })
+        );
+
+        // Filter out null results (deleted posts)
+        const validBookmarks = bookmarkedPosts.filter(post => post !== null);
+        const lastVisibleDoc = bookmarkDocs.length > 0 ? bookmarkDocs[bookmarkDocs.length - 1] : null;
+
+        console.log(`Fetched ${validBookmarks.length} bookmarked posts for user ${userId}`);
+
+        return {
+            posts: validBookmarks,
+            count: validBookmarks.length,
+            hasMore: hasMore,
+            lastDocId: lastVisibleDoc ? lastVisibleDoc.id : null,
+            userId: userId,
+            message: 'Bookmarked posts fetched successfully.'
+        };
+
+    } catch (error) {
+        console.error(`Error in handleGetBookmarks for user ${userId}:`, error);
+        if (error instanceof functions.https.HttpsError) {
+            throw error;
+        }
+        throwHttpsError('internal', 'Failed to fetch bookmarked posts.', error.message);
+    }
 }
 
 // async function handleUpdateProfile(payload, userId) {
