@@ -116,6 +116,9 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
             case 'getBookmarks':
                 result = await handleGetBookmarks(payload, userId);
                 break;
+            case 'getTrending':
+                result = await handleGetTrending(payload, userId);
+                break;
 
             //     case 'updateProfile':
             //         return await handleUpdateProfile(payload, userId);
@@ -2019,6 +2022,130 @@ function calculateRelevanceScore(postData, searchTerms) {
     score += (postData.commentsCount || 0) * 0.2;
     
     return score;
+}
+
+async function handleGetTrending(payload, userId) {
+    const { limit = 20, timeframe = '7d' } = payload;
+
+    // Input validation
+    if (typeof limit !== 'number' || limit < 1 || limit > 50) {
+        throwHttpsError('invalid-argument', 'Limit must be a number between 1 and 50.');
+    }
+    if (!['1d', '7d', '30d'].includes(timeframe)) {
+        throwHttpsError('invalid-argument', 'Timeframe must be one of: 1d, 7d, 30d.');
+    }
+
+    try {
+        const daysBack = timeframe === '1d' ? 1 : timeframe === '7d' ? 7 : 30;
+        const threshold = new Date();
+        threshold.setDate(threshold.getDate() - daysBack);
+
+        console.log(`Fetching trending posts from last ${daysBack} days for user ${userId}`);
+
+        // Get posts from the specified timeframe
+        const postsQuery = db.collection(COLLECTIONS.POSTS)
+            .where('createdAt', '>=', threshold)
+            .orderBy('createdAt', 'desc')
+            .limit(limit * 3); // Get more posts for engagement scoring
+
+        const snapshot = await postsQuery.get();
+
+        if (snapshot.empty) {
+            return {
+                posts: [],
+                timeframe,
+                count: 0,
+                message: 'No trending posts found for the specified timeframe.'
+            };
+        }
+
+        // Calculate engagement scores for each post
+        const postsWithScores = snapshot.docs.map(doc => {
+            const postData = { id: doc.id, ...doc.data() };
+            
+            // Calculate engagement score with weighted metrics
+            const likesWeight = 2;
+            const commentsWeight = 3;
+            const bookmarksWeight = 4;
+            const aiQualityBonus = postData.AiMetadata ? 5 : 0; // Bonus for AI-analyzed content
+            
+            const engagementScore = 
+                (postData.likesCount || 0) * likesWeight + 
+                (postData.commentsCount || 0) * commentsWeight + 
+                (postData.bookmarksCount || 0) * bookmarksWeight +
+                aiQualityBonus;
+
+            // Apply recency weight (newer posts get slight boost)
+            const ageInHours = (Date.now() - postData.createdAt.toDate().getTime()) / (1000 * 60 * 60);
+            const maxAgeHours = daysBack * 24;
+            const recencyWeight = Math.max(0.5, 1 - (ageInHours / maxAgeHours) * 0.5); // 0.5 to 1.0
+            
+            const trendingScore = engagementScore * recencyWeight;
+
+            return {
+                ...postData,
+                engagementScore,
+                trendingScore,
+                recencyWeight
+            };
+        });
+
+        // Sort by trending score (highest first) and take requested limit
+        const trendingPosts = postsWithScores
+            .sort((a, b) => b.trendingScore - a.trendingScore)
+            .slice(0, limit);
+
+        // Enrich posts with user interaction data
+        const enrichedPosts = await Promise.all(
+            trendingPosts.map(async (post) => {
+                try {
+                    // Check if current user liked this post
+                    const likeDocRef = db.collection(COLLECTIONS.POSTS)
+                        .doc(post.id)
+                        .collection(SUBCOLLECTIONS.LIKES)
+                        .doc(userId);
+                    const likeDoc = await likeDocRef.get();
+                    post.likedByCurrentUser = likeDoc.exists;
+
+                    // Check if current user bookmarked this post
+                    const bookmarkDocRef = db.collection(COLLECTIONS.USERS)
+                        .doc(userId)
+                        .collection(SUBCOLLECTIONS.BOOKMARKS)
+                        .doc(post.id);
+                    const bookmarkDoc = await bookmarkDocRef.get();
+                    post.bookmarkedByCurrentUser = bookmarkDoc.exists;
+
+                    // Remove internal scoring fields for cleaner response
+                    delete post.engagementScore;
+                    delete post.recencyWeight;
+                    // Keep trendingScore for client-side display if needed
+
+                } catch (err) {
+                    console.error(`Error checking interactions for trending post ${post.id}:`, err);
+                    post.likedByCurrentUser = false;
+                    post.bookmarkedByCurrentUser = false;
+                }
+                return post;
+            })
+        );
+
+        console.log(`Fetched ${enrichedPosts.length} trending posts for timeframe ${timeframe}`);
+
+        return {
+            posts: enrichedPosts,
+            timeframe,
+            count: enrichedPosts.length,
+            threshold: threshold.toISOString(),
+            message: 'Trending posts fetched successfully.'
+        };
+
+    } catch (error) {
+        console.error(`Error in handleGetTrending for timeframe ${timeframe}:`, error);
+        if (error instanceof functions.https.HttpsError) {
+            throw error;
+        }
+        throwHttpsError('internal', 'Failed to fetch trending posts.', error.message);
+    }
 }
 
 async function handleGetBookmarks(payload, userId) {
