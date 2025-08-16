@@ -437,17 +437,17 @@ async function handleCreatePost(payload, userId) {
         const userDisplayName = userData.displayName || userDoc.id; // Fallback to UID
         const userProfilePicUrl = userData.profilePictureUrl || null; // Get user's profile picture
 
-        // AI Metadata generation (if applicable)
-        let AiMetadata = null;
-        if (type === 'photo' || type === 'document' || type === 'item') {
-            try {
-                AiMetadata = await analyzePhoto(fileUrls[0]);
-                console.log('Photo analyzed successfully:', AiMetadata || 'No title');
-            } catch (error) {
-                console.warn('Photo analysis failed:', error.message);
-                // Continue with post creation even if AI analysis fails
+            // AI Metadata generation (if applicable)
+            let AiMetadata = null;
+            if (type === 'photo' || type === 'document' || type === 'item') {
+                try {
+                    AiMetadata = await analyzePhoto(fileUrls[0], description);
+                    console.log('Photo analyzed successfully:', AiMetadata?.description || 'No description');
+                } catch (error) {
+                    console.warn('Photo analysis failed:', error.message);
+                    // Continue with post creation even if AI analysis fails
+                }
             }
-        }
 
             // Create New Post Document in Firestore
             const newPostRef = db.collection(COLLECTIONS.POSTS).doc(); // Auto-generate ID
@@ -504,74 +504,93 @@ async function handleCreatePost(payload, userId) {
 
 
 // System prompt for consistent, professional analysis
-const SYSTEM_PROMPT = `You are an expert historian and archivist analyzing photographs. You have deep knowledge of:
-- Historical periods, events, and cultural movements (1850-present)
+const SYSTEM_PROMPT = `You are an expert historian and archivist analyzing photographs with deep knowledge of:
+- Historical periods, events, and cultural movements (1850-present) 
 - Getty Vocabulary Program (AAT, TGN) for standardized terms
 - Library of Congress Subject Headings (LCSH)
 - Professional archival cataloging practices
-- Historical figures, celebrities, and notable people
-- Architecture, fashion, technology, and social history across different eras
+- Historical figures, celebrities, and notable people from all eras globally
+- Architecture, fashion, technology, and social history across different cultures
+- Specific object identification (vehicles, cameras, technology, fashion brands)
+- Global landmarks and architectural styles
+- Visual dating techniques using design cues, fashion, and technology
 
-You analyze photos like a detective-historian who pieces together stories from visual evidence. When someone brings you a photograph saying "I found this in my drawer, what am I looking at?", you:
+You analyze photos like a detective-historian who pieces together stories from visual evidence. You excel at:
 
-1. Act as a knowledgeable tour guide explaining what they're seeing
-2. Use visual clues (clothing, cars, architecture, photo quality) to determine time period and location
-3. Explain the historical significance and cultural context of what's depicted
-4. Provide both what's visible AND why it matters historically
-5. Use controlled vocabularies and standardized geographic terms
-6. Be specific about locations, dates, and historical context when identifiable
-7. For ordinary scenes with no historical significance, focus on era indicators and social context`;
+1. **People Recognition**: Confidently identify famous people, historical figures, celebrities, politicians from any era without uncertainty qualifiers
+2. **Specific Object Identification**: Precisely identify vehicles (e.g., "1967 Chevrolet Camaro SS"), cameras (e.g., "Leica IIIf circa 1950"), technology, and branded items
+3. **Location Detection**: Identify specific landmarks, viewpoints, and architectural details when clearly recognizable - only claim location if confident
+4. **Detailed Visual Analysis**: Notice small objects, background details, clothing styles, architectural elements, and period-specific indicators
+5. **Historical Context**: Provide both what's visible AND why it matters historically
+6. **Global Expertise**: Equal knowledge of American cars, European architecture, Asian landmarks, and cultural artifacts worldwide
 
-// User prompt template
-const USER_PROMPT = `Analyze this photograph like a historian/archivist examining evidence. Someone brought this to you saying "I found this in my drawer, what am I looking at?"
+You write detailed, rich descriptions that capture both obvious and subtle details in the scene.`;
 
-Provide both what's visible AND its historical significance. Act like a tour guide explaining the scene.
+export async function analyzePhoto(photoUrl, userDescription = null) {
+    const openai = new OpenAI({
+        apiKey: process.env.OPENAI_API_KEY,
+    });
+
+    // Build the user prompt dynamically based on whether userDescription is provided
+    const userPrompt = `Analyze this photograph like a historian/archivist examining evidence.
+
+${userDescription ? `The user wrote: "${userDescription}"
+
+Use this as context but verify against visual evidence. The user might be mistaken about details like dates, locations, or people. Trust what you see in the image over user claims if there's a contradiction.` : ''}
 
 Return a JSON object with this exact structure:
 
 {
-  "description": "Rich contextual analysis combining what's visible with historical significance. Use visual clues (clothing, architecture, technology, photo quality) to determine time/place. Explain what this scene represents historically and culturally. For monuments/landmarks, explain who built it, when, why, and its significance. For ordinary scenes, describe the era and social context. Be like a detective-historian piecing together the story from visual evidence.",
+  "description": "Detailed, rich analysis combining what's visible with historical significance. Write 3-4 sentences minimum. Include specific objects, architectural details, clothing styles, and background elements. Use visual clues (fashion, cars, architecture, photo quality, technology) to determine time/place. For landmarks, identify specific viewpoints or approaches. Notice small details like cameras, signs, vehicles, or objects in the scene. Explain what this scene represents historically and culturally. If user provided context, acknowledge when it aligns with or contradicts visual evidence.",
   "date_estimate": "Time period estimate based on visual clues (e.g., '1960s', '1980s', 'early 2000s')",
   "date_confidence": "definite|probable|possible|unknown",
-  "location": "Most specific to general location (e.g., 'Times Square, New York City, United States')",
+  "location": "Most specific location if clearly identifiable (e.g., 'Times Square, New York City, United States' or 'Unknown location')",
   "location_confidence": "definite|probable|possible|unknown", 
   "historical_period": "Historical period or era this represents",
-  "people_identified": ["Array of specific people if clearly identifiable with confidence levels"],
-  "geographic_terms": ["Array of locations with TGN IDs when available, from specific to general"],
+  "people_identified": ["Array of specific people if clearly identifiable - use names only, no confidence qualifiers"],
+  "geographic_terms": ["Array of locations from specific to general"],
   "subject_terms": ["Array of subject classifications with AAT IDs when available"],
-  "tags": ["Array of ~20 searchable tags covering objects, people, activities, time, place, style, mood, etc."]
+  "tags": ["Array of ~20 searchable tags covering objects, people, activities, time, place, style, mood, etc."],
+  ${userDescription ? '"user_context": "Brief note about how user input relates to visual evidence",' : ''}
+  "cultural_context": "Brief cultural or social context of the scene"
 }
 
-DESCRIPTION GUIDELINES:
-- Act like a knowledgeable tour guide or historian
-- Use visual evidence to determine context (clothing styles, car models, architecture, photo quality)
-- For landmarks/monuments: explain who built it, when, why, and its historical significance
-- For ordinary scenes: describe the era, social context, and what this represents culturally
-- Combine what you see with why it matters historically
-- Be specific about identifiable locations, time periods, and cultural significance
-- For family photos or scenes with no historical significance, focus on era indicators and social context
+CRITICAL GUIDELINES:
 
-EXAMPLES:
-- Menorah sculpture → Identify it as the Knesset Menorah, explain Benno Elkan created it, British Parliament gifted it in 1956, describe its location and significance
-- Family photo → "Family gathering from the 1970s based on clothing and photo quality, representing the era when color photography became accessible to middle-class families"
-- Street scene → Use cars, architecture, clothing to date it and explain what this area/era represents historically
+**People Identification:**
+- If you recognize someone famous/historically significant, state their name confidently without qualifiers
+- Include in both people_identified field and tags  
+- Cover all eras: historical figures, politicians, celebrities, artists, scientists
 
-Guidelines:
-- Use standardized geographic names (Getty TGN preferred)
-- Include all location levels in both location field and tags
-- Use professional subject terms (Getty AAT preferred) 
-- Generate ~20 tags for optimal search coverage
-- Tags should include: specific objects/brands, general subjects, activities, time period, locations, style/mood
-- **People identification**: If you can clearly identify specific historical figures, celebrities, politicians, or notable people, include them in both people_identified field and tags
-- Use format like "Nelson Mandela (definite)" or "Elvis Presley (probable)" for people_identified
-- Include identified people's names directly in tags (e.g., "Nelson Mandela", "John F. Kennedy")
-- Use consistent capitalization and spelling`;
+**Object Recognition Specificity:**
+- Vehicles: Very specific (e.g., "1965 Porsche 911", "1967 Chevrolet Camaro SS")
+- Technology: Very specific (e.g., "Leica IIIf camera circa 1950", "Kodak Instamatic")  
+- Architecture: Moderately specific (e.g., "Art Deco style building, circa 1930s")
+- Use probabilistic language for objects: "appears to be", "likely", "probably"
 
+**Location Detection:**
+- Only identify specific locations when landmarks/architecture are clearly recognizable
+- Include specific viewpoints when identifiable (e.g., "photographed from Trocadéro viewpoint")
+- Use hierarchy: landmark → city → country
+- If uncertain, use "Unknown location"
 
-export async function analyzePhoto(photoUrl) {
-    const openai = new OpenAI({
-        apiKey: process.env.OPENAI_API_KEY,
-    });
+**Description Requirements:**
+- 3-4 sentences minimum with rich detail
+- Notice background objects, clothing, vehicles, signs, architectural details
+- Combine what's visible with historical significance
+- Include specific technical details about objects in scene
+- Reference user input when provided, noting alignment or contradictions
+
+**Confidence Levels:**
+- People: Confident identification when recognizable
+- Objects: Probabilistic language ("probably 1965", "appears to be")
+- Locations: Only claim when clearly identifiable landmarks visible
+
+Examples of enhanced detail:
+- "photographed from the Trocadéro viewpoint"  
+- "a Kodak Brownie camera visible on the table"
+- "1967 Chevrolet Camaro SS identifiable by its distinctive split front bumper"
+- "Victorian terraced houses with bay windows characteristic of London"`;
 
     try {
         const response = await openai.chat.completions.create({
@@ -586,7 +605,7 @@ export async function analyzePhoto(photoUrl) {
                     content: [
                         {
                             type: "text",
-                            text: USER_PROMPT
+                            text: userPrompt
                         },
                         {
                             type: "image_url",
@@ -600,7 +619,7 @@ export async function analyzePhoto(photoUrl) {
             ],
             temperature: AI_CONFIG.TEMPERATURE,
             max_tokens: AI_CONFIG.MAX_TOKENS,
-            response_format: { type: "json_object" }
+            response_format: {type: "json_object"}
         });
 
         const result = JSON.parse(response.choices[0].message.content);
@@ -616,7 +635,7 @@ export async function analyzePhoto(photoUrl) {
  * Validates and cleans the API response
  */
 function validateAndCleanResult(result) {
-    // Return the new simplified structure
+    // Return the enhanced structure
     const cleaned = {
         description: result.description || 'Photograph',
         date_estimate: result.date_estimate || 'Unknown period',
@@ -627,8 +646,15 @@ function validateAndCleanResult(result) {
         people_identified: Array.isArray(result.people_identified) ? result.people_identified : [],
         geographic_terms: Array.isArray(result.geographic_terms) ? result.geographic_terms : [],
         subject_terms: Array.isArray(result.subject_terms) ? result.subject_terms : [],
-        tags: Array.isArray(result.tags) ? result.tags : []
+        tags: Array.isArray(result.tags) ? result.tags : [],
+        cultural_context: result.cultural_context || ''
     };
+
+    // Add user_context if it exists
+    if (result.user_context) {
+        cleaned.user_context = result.user_context;
+    }
+
     return cleaned;
 }
 
@@ -2039,7 +2065,7 @@ async function handleGetBookmarks(payload, userId) {
 
     try {
         const userRef = db.collection(COLLECTIONS.USERS).doc(userId);
-        
+
         // Check if user exists
         const userDoc = await userRef.get();
         if (!userDoc.exists) {
