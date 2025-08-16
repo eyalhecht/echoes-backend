@@ -39,7 +39,8 @@ export const DEFAULTS = {
     SEARCH_LIMIT: 10,
     SUGGESTED_USERS_LIMIT: 5,
     LOCATION_RADIUS: 10,
-    LOCATION_POSTS_LIMIT: 50
+    LOCATION_POSTS_LIMIT: 50,
+    TRENDING_LIMIT: 20
 };
 
 // --- Post Configuration ---

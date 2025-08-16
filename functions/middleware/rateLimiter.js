@@ -18,6 +18,8 @@ const RATE_LIMITS = {
     getSuggestedUsers: { max: 50, windowMs: 60 * 60 * 1000 }, // 50 per hour
     getFollowersList: { max: 20, windowMs: 60 * 60 * 1000 }, // 20 per hour
     getFollowingList: { max: 20, windowMs: 60 * 60 * 1000 }, // 20 per hour
+    getBookmarks: { max: 100, windowMs: 60 * 60 * 1000 }, // 100 per hour
+    getTrending: { max: 200, windowMs: 60 * 60 * 1000 }, // 200 per hour
 };
 const rateLimiter = {
     users: new Map(), // userId -> { action -> { count, resetTime } }
