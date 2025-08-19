@@ -119,6 +119,9 @@ export const apiGateway = functions.https.onCall(async (request, response) => {
             case 'getTrending':
                 result = await handleGetTrending(payload, userId);
                 break;
+            case 'getPost':
+                result = await handleGetPost(payload, userId);
+                break;
 
             //     case 'updateProfile':
             //         return await handleUpdateProfile(payload, userId);
@@ -2257,6 +2260,67 @@ async function handleGetBookmarks(payload, userId) {
             throw error;
         }
         throwHttpsError('internal', 'Failed to fetch bookmarked posts.', error.message);
+    }
+}
+
+async function handleGetPost(payload, userId) {
+    const { postId } = payload;
+
+    // Input validation
+    if (!postId || typeof postId !== 'string') {
+        throwHttpsError('invalid-argument', 'A valid postId is required.');
+    }
+
+    try {
+        // Get the post document
+        const postRef = db.collection(COLLECTIONS.POSTS).doc(postId);
+        const postDoc = await postRef.get();
+
+        if (!postDoc.exists) {
+            throwHttpsError('not-found', 'Post not found.');
+        }
+
+        const postData = { id: postDoc.id, ...postDoc.data() };
+
+        // Check if current user liked this post
+        try {
+            const likeDocRef = db.collection(COLLECTIONS.POSTS)
+                .doc(postId)
+                .collection(SUBCOLLECTIONS.LIKES)
+                .doc(userId);
+            const likeDoc = await likeDocRef.get();
+            postData.likedByCurrentUser = likeDoc.exists;
+        } catch (err) {
+            console.error(`Error checking like status for post ${postId}:`, err);
+            postData.likedByCurrentUser = false;
+        }
+
+        // Check if current user bookmarked this post
+        try {
+            const bookmarkDocRef = db.collection(COLLECTIONS.USERS)
+                .doc(userId)
+                .collection(SUBCOLLECTIONS.BOOKMARKS)
+                .doc(postId);
+            const bookmarkDoc = await bookmarkDocRef.get();
+            postData.bookmarkedByCurrentUser = bookmarkDoc.exists;
+        } catch (err) {
+            console.error(`Error checking bookmark status for post ${postId}:`, err);
+            postData.bookmarkedByCurrentUser = false;
+        }
+
+        console.log(`Fetched post ${postId} for user ${userId}`);
+
+        return {
+            post: postData,
+            message: 'Post fetched successfully.'
+        };
+
+    } catch (error) {
+        console.error(`Error in handleGetPost for post ${postId}:`, error);
+        if (error instanceof functions.https.HttpsError) {
+            throw error;
+        }
+        throwHttpsError('internal', 'Failed to fetch post.', error.message);
     }
 }
 
