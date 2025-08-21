@@ -8,16 +8,10 @@ import OpenAI from 'openai';
 import { rateLimitMiddleware, incrementRateLimit } from './middleware/rateLimiter.js';
 import { COLLECTIONS, SUBCOLLECTIONS, LIMITS, DEFAULTS, POST_TYPES, AI_CONFIG, GEO, TIME } from './utils/constants.js';
 
-// --- Initialize Firebase Admin SDK ---
-// This initializes the SDK with your Firebase project's credentials automatically
-// when deployed to Cloud Functions.
 admin.initializeApp();
 
-// Get a Firestore database instance
 const db = admin.firestore();
 
-// --- Helper for standardized error messages ---
-// This ensures your errors are caught nicely by the client-side Firebase SDK
 const throwHttpsError = (code, message, details) => {
     throw new functions.https.HttpsError(code, message, details);
 };
@@ -443,15 +437,28 @@ async function handleCreatePost(payload, userId) {
         const userDisplayName = userData.displayName || userDoc.id; // Fallback to UID
         const userProfilePicUrl = userData.profilePictureUrl || null; // Get user's profile picture
 
-        // AI Metadata generation (if applicable)
+        // AI Metadata generation and content moderation (if applicable)
         let AiMetadata = null;
+        let safeSearchLikelihood = null;
+        
         if (type === 'photo' || type === 'document' || type === 'item') {
             try {
+                const moderationResult = await moderateImage(fileUrls[0]);
+                safeSearchLikelihood = moderationResult;
+
+                if (!moderationResult.isAppropriate) {
+                    throwHttpsError('invalid-argument', 
+                        'Image cannot be posted.');
+                }
                 AiMetadata = await analyzePhoto(fileUrls[0]);
-                console.log('Photo analyzed successfully:', AiMetadata || 'No title');
+                console.log('Photo analyzed and moderated successfully:', AiMetadata || 'No title');
             } catch (error) {
-                console.warn('Photo analysis failed:', error.message);
-                // Continue with post creation even if AI analysis fails
+                // If the error is about inappropriate content, re-throw it
+                if (error.code === 'invalid-argument') {
+                    throw error;
+                }
+                console.warn('Photo analysis or moderation failed:', error.message);
+                // Continue with post creation even if AI analysis fails, but not if moderation fails
             }
         }
 
@@ -474,8 +481,8 @@ async function handleCreatePost(payload, userId) {
             bookmarksCount: 0,
             createdAt: new Date(), // Server timestamp is best practice
             updatedAt: new Date(),
-            AiMetadata
-            // safeSearch: safeSearchLikelihood,
+            AiMetadata,
+            safeSearch: safeSearchLikelihood,
         };
 
         const searchKeywords = generateSearchKeywords(postData);
@@ -636,6 +643,66 @@ function validateAndCleanResult(result) {
         tags: Array.isArray(result.tags) ? result.tags : []
     };
     return cleaned;
+}
+
+export async function moderateImage(imageUrl) {
+    // Initialize Vision API client
+    const client = new vision.ImageAnnotatorClient();
+    console.log(imageUrl);
+
+    try {
+        // Perform safe search detection
+        const [result] = await client.safeSearchDetection({
+            image: { source: { imageUri: imageUrl } }
+        });
+
+        const safeSearch = result.safeSearchAnnotation;
+        
+        // Convert likelihood strings to numeric scores for easier comparison
+        const likelihoodToScore = {
+            'VERY_UNLIKELY': 1,
+            'UNLIKELY': 2,
+            'POSSIBLE': 3,
+            'LIKELY': 4,
+            'VERY_LIKELY': 5
+        };
+
+        const moderationResult = {
+            adult: safeSearch.adult,
+            violence: safeSearch.violence,
+            racy: safeSearch.racy,
+            medical: safeSearch.medical,
+            spoof: safeSearch.spoof,
+            adultScore: likelihoodToScore[safeSearch.adult] || 1,
+            violenceScore: likelihoodToScore[safeSearch.violence] || 1,
+            racyScore: likelihoodToScore[safeSearch.racy] || 1,
+            isAppropriate: (
+                likelihoodToScore[safeSearch.adult] <= 2 &&
+                likelihoodToScore[safeSearch.violence] <= 2 &&
+                likelihoodToScore[safeSearch.racy] <= 3 // Slightly more lenient for racy content
+            )
+        };
+
+        console.log('Image moderation result:', moderationResult);
+        return moderationResult;
+
+    } catch (error) {
+        console.error('Image moderation failed:', error);
+        // In case of API failure, we'll allow the image but log the issue
+        // You might want to be more strict here depending on your requirements
+        return {
+            adult: 'UNKNOWN',
+            violence: 'UNKNOWN', 
+            racy: 'UNKNOWN',
+            medical: 'UNKNOWN',
+            spoof: 'UNKNOWN',
+            adultScore: 1,
+            violenceScore: 1,
+            racyScore: 1,
+            isAppropriate: false,
+            error: error.message
+        };
+    }
 }
 
 
