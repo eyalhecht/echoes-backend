@@ -1,0 +1,41 @@
+name: Deploy Firebase Functions to Production
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy_functions_prod:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Create Service Account Key File
+        run: echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY_PROD }}' > ${{ github.workspace }}/gcp-key.json
+
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools
+
+      - name: Install Functions Dependencies
+        run: |
+          cd functions
+          npm install
+          # If using TypeScript, uncomment the next line:
+          # npm run build
+          cd ..
+
+      - name: Deploy Firebase Functions to Production
+        run: firebase deploy --only functions --project echoes-prod-2afe6
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/gcp-key.json
+
+      - name: Clean up Service Account Key
+        if: always()
+        run: rm -f ${{ github.workspace }}/gcp-key.json
