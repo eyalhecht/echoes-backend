@@ -7,6 +7,9 @@ import vision from '@google-cloud/vision';
 import OpenAI from 'openai';
 import { rateLimitMiddleware, incrementRateLimit } from './middleware/rateLimiter.js';
 import { COLLECTIONS, SUBCOLLECTIONS, LIMITS, DEFAULTS, POST_TYPES, AI_CONFIG, GEO, TIME } from './utils/constants.js';
+import { defineSecret} from "firebase-functions/params";
+
+const openaiApiKey = defineSecret('OPENAI_API_KEY');
 
 admin.initializeApp();
 
@@ -583,7 +586,7 @@ Guidelines:
 
 export async function analyzePhoto(photoUrl) {
     const openai = new OpenAI({
-        apiKey: process.env.OPENAI_API_KEY,
+        apiKey: openaiApiKey.value(),
     });
 
     try {
