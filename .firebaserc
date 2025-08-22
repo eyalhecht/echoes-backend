@@ -1,5 +1,8 @@
 {
   "projects": {
-    "default": "echoes-677"
-  }
+    "default": "echoes-677",
+    "prod": "echoes-prod-2afe6"
+  },
+  "targets": {},
+  "etags": {}
 }
