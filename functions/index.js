@@ -23,8 +23,11 @@ const throwHttpsError = (code, message, details) => {
 
 // --- Your Main API  Gateway Callable Function ---
 // This function handles all client-side API calls and dispatches to appropriate logic.
-export const apiGateway = functions.https.onCall(async (request, response) => {
-    { secrets: [openaiApiKey] }
+export const apiGateway = functions
+    .runWith({
+        secrets: [openaiApiKey]
+    })
+    .https.onCall(async (request, response) => {    { secrets: [openaiApiKey] }
     // 1. **Authentication Check (Automatic with onCall)**
     //    context.auth is automatically populated if the user is signed in with Firebase Auth.
     if (!request.auth) {
