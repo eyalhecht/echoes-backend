@@ -19,7 +19,7 @@ const throwHttpsError = (code, message, details) => {
     throw new functions.https.HttpsError(code, message, details);
 };
 
-// --- Rate Limiting Configuration ---
+// --- Rate Limiting Configaduration ---
 
 // --- Your Main API  Gateway Callable Function ---
 // This function handles all client-side API calls and dispatches to appropriate logic.
