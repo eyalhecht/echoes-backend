@@ -286,7 +286,7 @@ function generateSearchKeywords(postData) {
 }
 
 async function handleGetFeed(payload, userId) {
-    const { limit = DEFAULTS.FEED_LIMIT, lastPostId = null } = payload;
+    const { limit = DEFAULTS.FEED_LIMIT, lastPostId = null, feedType = 'recent' } = payload;
     const POST_LIMIT = limit;
 
     // Basic validation
@@ -296,28 +296,85 @@ async function handleGetFeed(payload, userId) {
     if (lastPostId !== null && typeof lastPostId !== 'string') {
         throwHttpsError('invalid-argument', 'lastPostId must be a string or null.');
     }
+    if (!['recent', 'following'].includes(feedType)) {
+        throwHttpsError('invalid-argument', 'feedType must be either "recent" or "following".');
+    }
 
     try {
-        let postsQuery = db.collection(COLLECTIONS.POSTS)
-            .orderBy('createdAt', 'desc');
+        let postDocs = [];
+        let hasMore = false;
 
-        if (lastPostId) {
-            const lastPostSnapshot = await db.collection(COLLECTIONS.POSTS).doc(lastPostId).get();
-            if (lastPostSnapshot.exists) {
-                postsQuery = postsQuery.startAfter(lastPostSnapshot);
-            } else {
-                console.warn(`lastPostId ${lastPostId} not found, fetching from start.`);
+        if (feedType === 'following') {
+            // Fetch the list of users that the current user follows
+            const followingSnapshot = await db.collection(COLLECTIONS.USERS)
+                .doc(userId)
+                .collection('following')
+                .get();
+
+            const followingUserIds = followingSnapshot.docs.map(doc => doc.id);
+
+            // If user doesn't follow anyone, return empty feed
+            if (followingUserIds.length === 0) {
+                console.log(`User ${userId} doesn't follow anyone. Returning empty feed.`);
+                return {
+                    posts: [],
+                    lastDocId: null,
+                    hasMore: false,
+                    message: 'Feed fetched successfully.',
+                };
             }
+
+            // Firestore 'in' query limitation: max 30 items (we'll handle this with batching if needed)
+            // For now, we'll fetch posts from followed users in batches
+            const BATCH_SIZE = 30; // Firestore 'in' operator limit is 30
+            let allPosts = [];
+
+            for (let i = 0; i < followingUserIds.length; i += BATCH_SIZE) {
+                const batch = followingUserIds.slice(i, i + BATCH_SIZE);
+
+                let postsQuery = db.collection(COLLECTIONS.POSTS)
+                    .where('userId', 'in', batch)
+                    .orderBy('createdAt', 'desc');
+
+                if (lastPostId && i === 0) {
+                    const lastPostSnapshot = await db.collection(COLLECTIONS.POSTS).doc(lastPostId).get();
+                    if (lastPostSnapshot.exists) {
+                        postsQuery = postsQuery.startAfter(lastPostSnapshot);
+                    } else {
+                        console.warn(`lastPostId ${lastPostId} not found, fetching from start.`);
+                    }
+                }
+
+                const postsSnapshot = await postsQuery.limit(POST_LIMIT + 1).get();
+                allPosts.push(...postsSnapshot.docs);
+            }
+            allPosts.sort((a, b) => b.data().createdAt - a.data().createdAt);
+            hasMore = allPosts.length > POST_LIMIT;
+            postDocs = allPosts.slice(0, POST_LIMIT);
+
+        } else {
+            // 'recent' feed type - fetch all posts (original behavior)
+            let postsQuery = db.collection(COLLECTIONS.POSTS)
+                .orderBy('createdAt', 'desc');
+
+            if (lastPostId) {
+                const lastPostSnapshot = await db.collection(COLLECTIONS.POSTS).doc(lastPostId).get();
+                if (lastPostSnapshot.exists) {
+                    postsQuery = postsQuery.startAfter(lastPostSnapshot);
+                } else {
+                    console.warn(`lastPostId ${lastPostId} not found, fetching from start.`);
+                }
+            }
+
+            // Fetch one extra document to check for 'hasMore'
+            const postsSnapshot = await postsQuery.limit(POST_LIMIT + 1).get();
+
+            // Check if there are more posts by comparing the actual fetched count
+            hasMore = postsSnapshot.docs.length > POST_LIMIT;
+
+            // Only take the requested number of posts (exclude the extra one)
+            postDocs = postsSnapshot.docs.slice(0, POST_LIMIT);
         }
-
-        // Fetch one extra document to check for 'hasMore'
-        const postsSnapshot = await postsQuery.limit(POST_LIMIT + 1).get();
-
-        // Check if there are more posts by comparing the actual fetched count
-        const hasMore = postsSnapshot.docs.length > POST_LIMIT;
-
-        // Only take the requested number of posts (exclude the extra one)
-        const postDocs = postsSnapshot.docs.slice(0, POST_LIMIT);
 
         const fetchedPosts = await Promise.all(postDocs.map(async (doc) => {
             const postData = { id: doc.id, ...doc.data() };
@@ -348,12 +405,13 @@ async function handleGetFeed(payload, userId) {
         // Get the last document ID for pagination
         const lastVisibleDoc = postDocs.length > 0 ? postDocs[postDocs.length - 1] : null;
 
-        console.log(`Fetched ${fetchedPosts.length} posts for user ${userId}, hasMore: ${hasMore}`);
+        console.log(`Fetched ${fetchedPosts.length} posts for user ${userId} (feedType: ${feedType}), hasMore: ${hasMore}`);
 
         return {
             posts: fetchedPosts,
             lastDocId: lastVisibleDoc ? lastVisibleDoc.id : null,
             hasMore: hasMore,
+            feedType: feedType,
             message: 'Feed fetched successfully.',
         };
     } catch (error) {
