@@ -1805,6 +1805,7 @@ async function handleGetSuggestedUsers(payload, userId) {
         throwHttpsError('invalid-argument', 'Limit must be a number between 1 and 20.');
     }
 
+
     try {
         // Calculate date 30 days ago
         const thirtyDaysAgo = new Date();
