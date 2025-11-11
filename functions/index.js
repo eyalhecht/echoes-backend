@@ -1276,8 +1276,8 @@ async function handleGetPostsByLocation(payload, userId) {
     if (!center || typeof center.lat !== 'number' || typeof center.lng !== 'number') {
         throwHttpsError('invalid-argument', 'Valid center coordinates (lat, lng) are required.');
     }
-    if (typeof radiusKm !== 'number' || radiusKm < 0.1 || radiusKm > 100) {
-        throwHttpsError('invalid-argument', 'Radius must be between 0.1 and 100 kilometers.');
+    if (typeof radiusKm !== 'number' || radiusKm < 0.1 || radiusKm > 500) {
+        throwHttpsError('invalid-argument', 'Radius must be between 0.1 and 500 kilometers.');
     }
     if (typeof limit !== 'number' || limit < 1 || limit > 100) {
         throwHttpsError('invalid-argument', 'Limit must be between 1 and 100.');
