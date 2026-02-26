@@ -67,3 +67,15 @@ node_modules/
 
 # dataconnect generated files
 .dataconnect
+
+# IDE files
+.idea/
+
+# Claude Code local settings
+.claude/
+
+# Local deployment scripts (contain project IDs / credentials)
+script.txt
+
+# CORS config (contains production URLs)
+cors.json
