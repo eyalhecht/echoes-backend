@@ -10,7 +10,7 @@ import { handleCreateUserProfile, handleGetProfile, handleGetUserPosts, handleGe
 import { handleFollowUnfollow, handleGetFollowersFollowing } from './handlers/social.js';
 import { handleDeleteUserAccount } from './handlers/account.js';
 
-export const apiGateway = functions.https.onCall({ secrets: [openaiApiKey] }, async (request, response) => {
+export const api = functions.https.onCall({ secrets: [openaiApiKey] }, async (request, response) => {
     if (!request.auth) {
         throwHttpsError('unauthenticated', 'Authentication required for this action.');
     }
@@ -24,75 +24,36 @@ export const apiGateway = functions.https.onCall({ secrets: [openaiApiKey] }, as
     console.log(`action:`, action);
     console.log(`payload:`, payload);
 
-    try {
-        let result;
-        switch (action) {
-            case 'followUser':
-            case 'unfollowUser':
-                result = await handleFollowUnfollow(payload, userId, action);
-                break;
-            case 'getFeed':
-                result = await handleGetFeed(payload, userId);
-                break;
-            case 'createPost':
-                result = await handleCreatePost(payload, userId);
-                break;
-            case 'createUserProfile':
-                result = await handleCreateUserProfile(payload, userId);
-                break;
-            case 'likePost':
-                result = await handleLikePost(payload, userId);
-                break;
-            case 'toggleBookmark':
-                result = await handleToggleBookmark(payload, userId);
-                break;
-            case 'getProfile':
-                result = await handleGetProfile(payload, userId);
-                break;
-            case 'getUserPosts':
-                result = await handleGetUserPosts(payload, userId);
-                break;
-            case 'deletePost':
-                result = await handleDeletePost(payload, userId);
-                break;
-            case 'addComment':
-                result = await handleAddComment(payload, userId);
-                break;
-            case 'getComments':
-                result = await handleGetComments(payload, userId);
-                break;
-            case 'getPostsByLocation':
-                result = await handleGetPostsByLocation(payload, userId);
-                break;
-            case 'getSuggestedUsers':
-                result = await handleGetSuggestedUsers(payload, userId);
-                break;
-            case 'getFollowersList':
-            case 'getFollowingList':
-                result = await handleGetFollowersFollowing(payload, userId, action);
-                break;
-            case 'searchUsers':
-                result = await handleSearchUsers(payload, userId);
-                break;
-            case 'searchPosts':
-                result = await handleSearchPosts(payload, userId);
-                break;
-            case 'getBookmarks':
-                result = await handleGetBookmarks(payload, userId);
-                break;
-            case 'getTrending':
-                result = await handleGetTrending(payload, userId);
-                break;
-            case 'getPost':
-                result = await handleGetPost(payload, userId);
-                break;
-            case 'deleteUserAccount':
-                result = await handleDeleteUserAccount(payload, userId);
-                break;
-            default:
-                throwHttpsError('not-found', `Action "${action}" not found.`);
-        }
+    const handlers = {
+        createPost:        (p, u) => handleCreatePost(p, u),
+        deletePost:        (p, u) => handleDeletePost(p, u),
+        getPost:           (p, u) => handleGetPost(p, u),
+        likePost:          (p, u) => handleLikePost(p, u),
+        toggleBookmark:    (p, u) => handleToggleBookmark(p, u),
+        getBookmarks:      (p, u) => handleGetBookmarks(p, u),
+        addComment:        (p, u) => handleAddComment(p, u),
+        getComments:       (p, u) => handleGetComments(p, u),
+        getFeed:           (p, u) => handleGetFeed(p, u),
+        getTrending:       (p, u) => handleGetTrending(p, u),
+        searchPosts:       (p, u) => handleSearchPosts(p, u),
+        getPostsByLocation:(p, u) => handleGetPostsByLocation(p, u),
+        createUserProfile: (p, u) => handleCreateUserProfile(p, u),
+        getProfile:        (p, u) => handleGetProfile(p, u),
+        getUserPosts:      (p, u) => handleGetUserPosts(p, u),
+        getSuggestedUsers: (p, u) => handleGetSuggestedUsers(p, u),
+        searchUsers:       (p, u) => handleSearchUsers(p, u),
+        followUser:        (p, u) => handleFollowUnfollow(p, u, 'followUser'),
+        unfollowUser:      (p, u) => handleFollowUnfollow(p, u, 'unfollowUser'),
+        getFollowersList:  (p, u) => handleGetFollowersFollowing(p, u, 'getFollowersList'),
+        getFollowingList:  (p, u) => handleGetFollowersFollowing(p, u, 'getFollowingList'),
+        deleteUserAccount: (p, u) => handleDeleteUserAccount(p, u),
+    };
 
+    try {
+        const handler = handlers[action];
+        if (!handler) throwHttpsError('not-found', `Action "${action}" not found.`);
+
+        const result = await handler(payload, userId);
         return result;
 
     } catch (error) {
