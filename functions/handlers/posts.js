@@ -1,7 +1,7 @@
 import functions from 'firebase-functions';
 import { db, admin } from '../utils/firebase.js';
 import { throwHttpsError } from '../utils/errors.js';
-import { analyzePhoto, moderateImage } from '../utils/ai.js';
+import { analyzePhoto, runVisionAnalysis } from '../utils/ai.js';
 import { generateSearchKeywords } from '../utils/search.js';
 import { COLLECTIONS, SUBCOLLECTIONS, LIMITS, POST_TYPES } from '../utils/constants.js';
 
@@ -52,13 +52,13 @@ export async function handleCreatePost(payload, userId) {
 
             if (type === 'photo' || type === 'document' || type === 'item') {
                 try {
-                    const moderationResult = await moderateImage(fileUrls[0]);
-                    safeSearchLikelihood = moderationResult;
+                    const visionContext = await runVisionAnalysis(fileUrls[0]);
+                    safeSearchLikelihood = visionContext.safeSearch;
 
-                    if (!moderationResult.isAppropriate) {
+                    if (!visionContext.safeSearch.isAppropriate) {
                         throwHttpsError('invalid-argument', 'Image cannot be posted.');
                     }
-                    AiMetadata = await analyzePhoto(fileUrls[0]);
+                    AiMetadata = await analyzePhoto(fileUrls[0], visionContext, { description, year, location });
                     console.log('Photo analyzed and moderated successfully:', AiMetadata || 'No title');
                 } catch (error) {
                     if (error.code === 'invalid-argument') {
