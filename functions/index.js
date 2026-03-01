@@ -2,7 +2,7 @@ import 'dotenv/config';
 import functions from 'firebase-functions';
 import './utils/firebase.js'; // triggers admin.initializeApp()
 import { throwHttpsError } from './utils/errors.js';
-import { openaiApiKey, analyzePhoto, runVisionAnalysis } from './utils/ai.js';
+import { openaiApiKey, analyzePhoto, checkSafeSearch } from './utils/ai.js';
 
 import { handleCreatePost, handleDeletePost, handleGetPost, handleLikePost, handleToggleBookmark, handleGetBookmarks, handleAddComment, handleGetComments } from './handlers/posts.js';
 import { handleGetFeed, handleGetTrending, handleSearchPosts, handleGetPostsByLocation } from './handlers/feed.js';
@@ -65,4 +65,4 @@ export const api = functions.https.onCall({ secrets: [openaiApiKey] }, async (re
     }
 });
 
-export { analyzePhoto, runVisionAnalysis };
+export { analyzePhoto, checkSafeSearch };
