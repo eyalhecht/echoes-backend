@@ -57,7 +57,11 @@ export const AI_CONFIG = {
     TEMPERATURE: 0.3,
     MAX_TOKENS: 2000,
     MODEL: "gpt-4o",
-    DETAIL: 'auto'
+    DETAIL: 'auto',
+    VISION_MAX_LANDMARKS: 5,
+    VISION_MAX_LABELS: 10,
+    VISION_MAX_WEB_RESULTS: 10,
+    VISION_TEXT_MAX_CHARS: 500,
 };
 
 // --- Geographic Constants ---
