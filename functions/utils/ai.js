@@ -85,11 +85,7 @@ function createVisionTools(imageUrl) {
             const pagesWithMatchingImages = (webDetection.pagesWithMatchingImages || [])
                 .slice(0, 5)
                 .map(p => ({ url: p.url, title: p.pageTitle || '' }));
-            return JSON.stringify({
-                webEntities,
-                matchingImageCount: matchCount,
-                pagesWithMatchingImages,
-            });
+            return JSON.stringify({ webEntities, matchingImageCount: matchCount, pagesWithMatchingImages });
         },
         {
             name: 'searchWeb',
@@ -137,7 +133,41 @@ function createVisionTools(imageUrl) {
         }
     );
 
-    return [detectLandmarks, extractText, searchWeb, detectLabels, detectLogos];
+    const searchWikipedia = tool(
+        async ({ query }) => {
+            try {
+                const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=3`;
+                const searchRes = await fetch(searchUrl, { headers: { 'User-Agent': 'Echoes-HistoricalAnalysis/1.0' } });
+                const searchData = await searchRes.json();
+                const hits = searchData?.query?.search || [];
+
+                if (hits.length === 0) return 'No Wikipedia articles found for this query.';
+
+                const topTitle = hits[0].title;
+                const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(topTitle)}`;
+                const summaryRes = await fetch(summaryUrl, { headers: { 'User-Agent': 'Echoes-HistoricalAnalysis/1.0' } });
+                const summaryData = await summaryRes.json();
+
+                return JSON.stringify({
+                    title: summaryData.title,
+                    summary: summaryData.extract?.substring(0, 800) || '',
+                    otherResults: hits.slice(1).map(h => h.title),
+                });
+            } catch (error) {
+                console.error('searchWikipedia failed:', error.message);
+                return `Wikipedia lookup failed: ${error.message}`;
+            }
+        },
+        {
+            name: 'searchWikipedia',
+            description: 'Look up a specific person, event, place, or organization on Wikipedia to get factual historical context. Call this after identifying something from other tools — e.g. a named person from searchWeb, a landmark from detectLandmarks, a logo or insignia from detectLogos, or a historical event you want to verify. Use a precise query like a full name or event name.',
+            schema: z.object({
+                query: z.string().describe('Specific search query, e.g. "Winston Churchill", "Battle of the Somme", "Eiffel Tower history"'),
+            }),
+        }
+    );
+
+    return [detectLandmarks, extractText, searchWeb, detectLabels, detectLogos, searchWikipedia];
 }
 
 export async function checkSafeSearch(imageUrl) {
@@ -207,6 +237,7 @@ export async function analyzePhoto(photoUrl, userContext = {}) {
 - detectLandmarks: well-known buildings, monuments, recognizable places
 - extractText: OCR of signs, newspapers, documents, captions
 - searchWeb: reverse image search — web entities, matching images, named individuals
+- searchWikipedia(query): look up a specific person, event, place, or organization to get verified historical facts — call this after other tools give you a name or event to investigate
 
 ## Two-phase workflow
 
@@ -222,7 +253,8 @@ Call only the tools that Phase 1 makes relevant:
 - Buildings, monuments, recognizable skylines → detectLandmarks
 - Visible text, signs, newspapers, captions → extractText
 - Faces of potentially identifiable people, or need broader context → searchWeb
-Call multiple tools in parallel within this phase when appropriate.
+- Named person, event, place, or organization identified by any tool → searchWikipedia
+Call multiple tools in parallel within this phase when appropriate. searchWikipedia can run in parallel with other Phase 2 tools if you already have a name to look up from Phase 1.
 
 ## Reasoning before your final answer
 Before producing the archival record, explicitly reason through:
@@ -233,12 +265,14 @@ Before producing the archival record, explicitly reason through:
 
 Your expertise covers: historical period dating from visual clues, identifying notable public figures, geographic identification using Getty TGN terminology, document analysis, and cultural/social context using Getty AAT subject classifications.
 ${userContextText}`;
+
     const agent = createAgent({
         model,
         tools: createVisionTools(photoUrl),
         systemPrompt,
         responseFormat: SynthesisSchema,
     });
+
     try {
         const result = await agent.invoke({
             messages: [
@@ -250,7 +284,9 @@ ${userContextText}`;
                 }),
             ],
         });
+
         return result.structuredResponse;
+
     } catch (error) {
         console.error('Photo analysis failed:', error);
         throw new Error(`Failed to analyze photo: ${error.message}`);
