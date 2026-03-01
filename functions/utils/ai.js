@@ -286,7 +286,7 @@ ${userContextText}`;
                     ],
                 }),
             ],
-        });
+        }, { recursionLimit: 6 });
 
         await statusCallback('Compiling the analysis...');
         return result.structuredResponse;
