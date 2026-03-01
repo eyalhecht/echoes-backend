@@ -15,7 +15,14 @@ const SynthesisSchema = z.object({
     location: z.string().describe("Most specific to general location"),
     location_confidence: z.enum(['definite', 'probable', 'possible', 'unknown']),
     historical_period: z.string().describe("Named historical period or era"),
-    people_identified: z.array(z.string()).describe("List of identified people with confidence levels"),
+    historical_significance: z.string().describe("Why this moment, place, or person matters historically — the broader story this image is part of"),
+    cultural_context: z.string().describe("The social, political, or cultural backdrop of the era depicted"),
+    era_indicators: z.array(z.string()).describe("Specific visual clues that informed the date estimate, e.g. 'sepia tone', 'Model T Ford visible', 'WWI-era infantry uniform'"),
+    people_identified: z.array(z.object({
+        name: z.string().describe("Full name of the identified person"),
+        role: z.string().describe("Their historical role or significance at this time, e.g. 'British Prime Minister, 1940-1945'"),
+        confidence: z.enum(['definite', 'probable', 'possible']),
+    })).describe("People identified in the photograph"),
     geographic_terms: z.array(z.string()).describe("Locations from specific to general with Getty TGN refs"),
     subject_terms: z.array(z.string()).describe("Getty AAT subject classifications"),
     tags: z.array(z.string()).describe("~20 searchable tags merging all insights"),
@@ -110,7 +117,27 @@ function createVisionTools(imageUrl) {
         }
     );
 
-    return [detectLandmarks, extractText, searchWeb, detectLabels];
+    const detectLogos = tool(
+        async () => {
+            const client = new vision.ImageAnnotatorClient();
+            const [result] = await client.annotateImage({
+                image: { source: { imageUri: imageUrl } },
+                features: [{ type: 'LOGO_DETECTION', maxResults: AI_CONFIG.VISION_MAX_LOGOS }],
+            });
+            const logos = (result.logoAnnotations || []).map(l => ({
+                name: l.description,
+                confidence: l.score,
+            }));
+            return JSON.stringify(logos.length > 0 ? logos : 'No logos detected');
+        },
+        {
+            name: 'detectLogos',
+            description: 'Detect logos, brand marks, newspaper mastheads, military insignia, government seals, and organizational symbols. Call when you see any printed material, uniforms, vehicles, storefronts, or official documents — logos often pinpoint the exact organization, publication, or era.',
+            schema: z.object({}),
+        }
+    );
+
+    return [detectLandmarks, extractText, searchWeb, detectLabels, detectLogos];
 }
 
 export async function checkSafeSearch(imageUrl) {
@@ -174,18 +201,37 @@ export async function analyzePhoto(photoUrl, userContext = {}) {
 
     const systemPrompt = `You are the Echoes historical photograph analyst — a senior archivist and historian revealing the hidden story of historical photographs.
 
-You have access to Google Cloud Vision API tools to gather evidence about the image. Use them strategically:
-- detectLandmarks: when you see buildings, monuments, or recognizable places
-- extractText: when you see text, signs, newspapers, documents, or captions
-- searchWeb: when you want to identify people, find context, or match the image against known sources
-- detectLabels: when you want scene classification and object identification
+## Available tools
+- detectLabels: scene classification and object identification — always call this first
+- detectLogos: logos, newspaper mastheads, military insignia, organizational symbols
+- detectLandmarks: well-known buildings, monuments, recognizable places
+- extractText: OCR of signs, newspapers, documents, captions
+- searchWeb: reverse image search — web entities, matching images, named individuals
 
-Workflow:
-1. Study the photograph carefully — note what you observe (people, setting, objects, text, architecture, clothing, technology).
-2. Call the Vision API tools that are relevant to what you see. Call multiple tools in parallel when appropriate. Skip tools that won't help.
-3. Combine your expert historical knowledge with the tool results to produce a comprehensive archival record.
+## Two-phase workflow
 
-Your expertise covers: historical period dating from visual clues (clothing, technology, photo quality), identifying notable public figures, geographic identification from architecture and signage (using Getty TGN terminology), document and text analysis, and cultural/social context analysis using Getty AAT subject classifications.
+### Phase 1 — Orient (always run first)
+Call detectLabels immediately to understand the scene type. Based on the results, form an initial hypothesis:
+- What era does this look like from photo quality alone (sepia/black-and-white/color)?
+- What is the setting (military, civilian, urban, rural, document)?
+- What specific features need deeper investigation?
+
+### Phase 2 — Investigate (evidence-based, based on Phase 1)
+Call only the tools that Phase 1 makes relevant:
+- Uniforms, insignia, printed material, vehicles → detectLogos
+- Buildings, monuments, recognizable skylines → detectLandmarks
+- Visible text, signs, newspapers, captions → extractText
+- Faces of potentially identifiable people, or need broader context → searchWeb
+Call multiple tools in parallel within this phase when appropriate.
+
+## Reasoning before your final answer
+Before producing the archival record, explicitly reason through:
+1. What visual clues indicate the time period? (photo quality, clothing, technology, vehicles)
+2. What did the tools confirm or contradict about your initial estimate?
+3. How confident are you in the date and location, and what evidence supports each?
+4. What is the broader historical significance — what larger story is this image part of?
+
+Your expertise covers: historical period dating from visual clues, identifying notable public figures, geographic identification using Getty TGN terminology, document analysis, and cultural/social context using Getty AAT subject classifications.
 ${userContextText}`;
     const agent = createAgent({
         model,

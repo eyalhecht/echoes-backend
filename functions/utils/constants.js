@@ -62,6 +62,7 @@ export const AI_CONFIG = {
     VISION_MAX_LABELS: 10,
     VISION_MAX_WEB_RESULTS: 10,
     VISION_TEXT_MAX_CHARS: 500,
+    VISION_MAX_LOGOS: 10,
 };
 
 // --- Geographic Constants ---
