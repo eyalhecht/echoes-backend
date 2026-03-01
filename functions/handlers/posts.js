@@ -36,7 +36,8 @@ export async function handleCreatePost(payload, userId) {
     }
 
     try {
-        const result = await db.runTransaction(async (transaction) => {
+        // Phase 1: Create the post immediately (fast transaction)
+        const postId = await db.runTransaction(async (transaction) => {
             const userRef = db.collection(COLLECTIONS.USERS).doc(userId);
             const userDoc = await transaction.get(userRef);
 
@@ -44,37 +45,15 @@ export async function handleCreatePost(payload, userId) {
                 throwHttpsError('not-found', 'User profile not found. Cannot create post.');
             }
             const userData = userDoc.data();
-            const userDisplayName = userData.displayName || userDoc.id;
-            const userProfilePicUrl = userData.profilePictureUrl || null;
-
-            let AiMetadata = null;
-            let safeSearchLikelihood = null;
-
-            if (type === 'photo' || type === 'document' || type === 'item') {
-                try {
-                    safeSearchLikelihood = await checkSafeSearch(fileUrls[0]);
-
-                    if (!safeSearchLikelihood.isAppropriate) {
-                        throwHttpsError('invalid-argument', 'Image cannot be posted.');
-                    }
-                    AiMetadata = await analyzePhoto(fileUrls[0], { description, year, location });
-                    console.log('Photo analyzed and moderated successfully:', AiMetadata || 'No title');
-                } catch (error) {
-                    if (error.code === 'invalid-argument') {
-                        throw error;
-                    }
-                    console.warn('Photo analysis or moderation failed:', error.message);
-                }
-            }
 
             const newPostRef = db.collection(COLLECTIONS.POSTS).doc();
 
             const postData = {
-                userId: userId,
-                userDisplayName: userDisplayName,
-                userProfilePicUrl: userProfilePicUrl,
+                userId,
+                userDisplayName: userData.displayName || userDoc.id,
+                userProfilePicUrl: userData.profilePictureUrl || null,
                 description: description.trim(),
-                type: type,
+                type,
                 files: fileUrls,
                 location: (location && typeof location._lat === 'number' && typeof location._long === 'number')
                     ? new admin.firestore.GeoPoint(location._lat, location._long)
@@ -85,28 +64,31 @@ export async function handleCreatePost(payload, userId) {
                 bookmarksCount: 0,
                 createdAt: new Date(),
                 updatedAt: new Date(),
-                AiMetadata,
-                safeSearch: safeSearchLikelihood,
+                AiMetadata: null,
+                aiStatus: (type === 'photo' || type === 'document' || type === 'item')
+                    ? 'Starting analysis...'
+                    : null,
+                safeSearch: null,
             };
 
-            const searchKeywords = generateSearchKeywords(postData);
-            postData.searchKeywords = searchKeywords;
-
-            console.log(`Generated ${searchKeywords.length} search keywords:`, searchKeywords.slice(0, 10));
-
+            postData.searchKeywords = generateSearchKeywords(postData);
             transaction.set(newPostRef, postData);
 
             const currentPostsCount = userData.postsCount || 0;
-            transaction.update(userRef, {
-                postsCount: currentPostsCount + 1,
-                updatedAt: new Date()
-            });
+            transaction.update(userRef, { postsCount: currentPostsCount + 1 });
 
-            return { postId: newPostRef.id };
+            return newPostRef.id;
         });
 
-        console.log(`Post ${result.postId} (${type}) created by ${userId} and postsCount incremented`);
-        return { postId: result.postId, message: 'Post created successfully!' };
+        // Phase 2: Run AI analysis in the background (non-blocking)
+        if (type === 'photo' || type === 'document' || type === 'item') {
+            analyzePostAsync(postId, fileUrls[0], { description, year, location }).catch(err =>
+                console.error('Background analysis failed for post', postId, err)
+            );
+        }
+
+        console.log(`Post ${postId} (${type}) created by ${userId}`);
+        return { postId, message: 'Post created successfully!' };
 
     } catch (error) {
         console.error('Error in handleCreatePost:', error);
@@ -114,6 +96,38 @@ export async function handleCreatePost(payload, userId) {
             throw error;
         }
         throwHttpsError('internal', 'Failed to create post.', error.message);
+    }
+}
+
+async function analyzePostAsync(postId, imageUrl, context) {
+    const postRef = db.collection(COLLECTIONS.POSTS).doc(postId);
+    const setStatus = (msg) => postRef.update({ aiStatus: msg });
+
+    try {
+        await setStatus('Checking image content...');
+        const safeSearchLikelihood = await checkSafeSearch(imageUrl);
+
+        if (!safeSearchLikelihood.isAppropriate) {
+            await postRef.update({
+                aiStatus: null,
+                removed: true,
+                removedReason: 'Content policy violation',
+            });
+            return;
+        }
+
+        await setStatus('Identifying historical period...');
+        const AiMetadata = await analyzePhoto(imageUrl, context, setStatus);
+
+        await postRef.update({
+            AiMetadata,
+            safeSearch: safeSearchLikelihood,
+            aiStatus: null,
+            updatedAt: new Date(),
+        });
+    } catch (err) {
+        console.error('analyzePostAsync error:', err);
+        await postRef.update({ aiStatus: null });
     }
 }
 

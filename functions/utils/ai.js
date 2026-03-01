@@ -214,7 +214,9 @@ export async function checkSafeSearch(imageUrl) {
     }
 }
 
-export async function analyzePhoto(photoUrl, userContext = {}) {
+export async function analyzePhoto(photoUrl, userContext = {}, statusCallback = async () => {}) {
+    await statusCallback('Examining visual details...');
+
     const model = new ChatOpenAI({
         model: AI_CONFIG.MODEL,
         temperature: AI_CONFIG.TEMPERATURE,
@@ -274,6 +276,7 @@ ${userContextText}`;
     });
 
     try {
+        await statusCallback('Researching historical context...');
         const result = await agent.invoke({
             messages: [
                 new HumanMessage({
@@ -285,6 +288,7 @@ ${userContextText}`;
             ],
         });
 
+        await statusCallback('Compiling the analysis...');
         return result.structuredResponse;
 
     } catch (error) {
