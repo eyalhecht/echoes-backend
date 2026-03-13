@@ -28,7 +28,10 @@ import {
 } from '../scripts/wikimediaApi.js';
 
 // --- Constants ---
-const BUCKET = 'echoes-677.firebasestorage.app';
+function getBucket() {
+    const projectId = admin.app().options.projectId || process.env.GCLOUD_PROJECT;
+    return `${projectId}.firebasestorage.app`;
+}
 
 const BAD_CONTENT_TERMS = [
     'sign', 'map', 'plaque', 'document', 'menu', 'notice board', 'information board',
@@ -202,7 +205,7 @@ function createTools(persona) {
 
                 // Upload to Storage
                 const storageUrl = await retryWithBackoff(() =>
-                    uploadToStorage(imageBuffer, meta.title, meta.mime, persona.id, BUCKET)
+                    uploadToStorage(imageBuffer, meta.title, meta.mime, persona.id, getBucket())
                 );
                 console.log(`[archivist] Uploaded: ${title}`);
 
@@ -223,7 +226,7 @@ function createTools(persona) {
 
                 // Content filter (only if AI data available)
                 if (aiResult && !isGoodContent(aiResult)) {
-                    await deleteFromStorage(storageUrl, BUCKET).catch(() => {});
+                    await deleteFromStorage(storageUrl, getBucket()).catch(() => {});
                     return `Skipped — "${title}" didn't pass content filter (sign/map/document or unknown location).`;
                 }
 
