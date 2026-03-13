@@ -82,3 +82,17 @@ export const runVintageArchivist = onSchedule(
         await runArchivist(persona);
     }
 );
+
+export const runEuropaArchivist = onSchedule(
+    {
+        schedule: 'every 12 hours',
+        timeoutSeconds: 540,
+        memory: '1GiB',
+        secrets: [openaiApiKey],
+    },
+    async () => {
+        const { runArchivist } = await import('./agents/archivistEngine.js');
+        const persona = (await import('./agents/personas/europaArchivist.js')).default;
+        await runArchivist(persona);
+    }
+);
