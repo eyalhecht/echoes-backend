@@ -97,6 +97,7 @@ export const runEuropaArchivist = onSchedule(
     }
 );
 
+
 export const runAmericanaArchivist = onSchedule(
     {
         schedule: 'every 12 hours',
