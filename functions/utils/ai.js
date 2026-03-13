@@ -283,7 +283,7 @@ ${userContextText}`;
                     ],
                 }),
             ],
-        });
+        }, { recursionLimit: 50 });
 
         return result.structuredResponse;
 
