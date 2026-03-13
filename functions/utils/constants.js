@@ -56,7 +56,7 @@ export const POST_TYPES = [
 export const AI_CONFIG = {
     TEMPERATURE: 0.3,
     MAX_TOKENS: 2000,
-    MODEL: "gpt-4o",
+    MODEL: "gpt-4o-mini",
     DETAIL: 'auto',
     VISION_MAX_LANDMARKS: 5,
     VISION_MAX_LABELS: 10,

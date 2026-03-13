@@ -1,5 +1,7 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
+dotenv.config({ path: '.env.local' });
 import functions from 'firebase-functions';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
 import './utils/firebase.js'; // triggers admin.initializeApp()
 import { throwHttpsError } from './utils/errors.js';
 import { openaiApiKey, analyzePhoto, checkSafeSearch } from './utils/ai.js';
@@ -66,3 +68,31 @@ export const api = functions.https.onCall({ secrets: [openaiApiKey] }, async (re
 });
 
 export { analyzePhoto, checkSafeSearch };
+
+export const runVintageArchivist = onSchedule(
+    {
+        schedule: 'every 12 hours',
+        timeoutSeconds: 540,
+        memory: '1GiB',
+        secrets: [openaiApiKey],
+    },
+    async () => {
+        const { runArchivist } = await import('./agents/archivistEngine.js');
+        const persona = (await import('./agents/personas/vintageArchivist.js')).default;
+        await runArchivist(persona);
+    }
+);
+
+export const runEuropaArchivist = onSchedule(
+    {
+        schedule: 'every 12 hours',
+        timeoutSeconds: 540,
+        memory: '1GiB',
+        secrets: [openaiApiKey],
+    },
+    async () => {
+        const { runArchivist } = await import('./agents/archivistEngine.js');
+        const persona = (await import('./agents/personas/europaArchivist.js')).default;
+        await runArchivist(persona);
+    }
+);
