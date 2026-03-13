@@ -393,7 +393,7 @@ export async function runArchivist(persona) {
                 content: `Start your session. Your categories to explore: ${categoryList}. Find and share ${persona.postsPerRun[0]}–${persona.postsPerRun[1]} great photos. Pick categories that feel right today — you don't need to use all of them.`,
             }),
         ],
-    });
+    }, { recursionLimit: 100 });
 
     const finalMessage = result.messages?.[result.messages.length - 1]?.content || 'Session complete.';
     console.log(`\n[archivist] Session summary: ${finalMessage}`);
